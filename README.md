@@ -1,14 +1,15 @@
 # Magpie
 
-Multi-AI adversarial PR review tool. Let different AI models review your code like Linus Torvalds, generating more comprehensive reviews through debate.
+Multi-AI adversarial code review tool. Multiple AI models independently review your PR, debate their findings, then a code-aware verifier audits each issue against the actual codebase.
 
 ## Core Concepts
 
-- **Same Perspective, Different Models**: All reviewers use the same prompt (Linus-style), but are powered by different AI models
-- **Natural Adversarial**: Differences between models naturally create disagreements and debates
-- **Anti-Sycophancy**: Explicitly tells AI they're debating with other AIs, preventing mutual agreement bias
-- **Fair Debate Model**: All reviewers in the same round see identical information - no unfair advantage from execution order
-- **Parallel Execution**: Same-round reviewers run concurrently for faster reviews
+- **Code-Aware Review**: CLI-based reviewers (Claude Code, Codex, Gemini CLI) read the actual source files via tools — not just the diff text. They can grep for callers, read surrounding context, and verify their findings before reporting.
+- **Multi-Dimensional Review**: Beyond correctness/security, reviewers check compatibility (rolling upgrade risks, breaking changes), feature interaction (shared state, cross-feature conflicts), and extensibility.
+- **Natural Adversarial**: Different AI models naturally create disagreements and cross-validation through debate.
+- **Integrated Verify+Audit**: After issues are extracted, a tool-equipped verifier reads the actual code to confirm each issue, filter false positives, and re-calibrate severity — all within magpie's pipeline.
+- **Fair Debate Model**: All reviewers in the same round see identical information — no unfair advantage from execution order.
+- **Parallel Execution**: Same-round reviewers run concurrently for faster reviews.
 
 ## Supported AI Providers
 
@@ -102,33 +103,30 @@ reviewers:
   claude:
     model: claude-code
     prompt: |
-      You are a senior engineer reviewing this PR. Be direct and concise like Linus Torvalds,
-      but constructive rather than harsh.
+      You are a senior engineer reviewing this PR. Be precise and evidence-based.
+      Review dimensions: Correctness, Security, Compatibility (rolling upgrade,
+      breaking changes), Feature Interaction (shared state, cross-feature conflicts),
+      Extensibility, Architecture, Performance & Resources.
+      Use Read/Grep tools to verify findings against actual code.
 
-      Focus on:
-      1. **Correctness** - Will this code work? Edge cases?
-      2. **Security** - Any vulnerabilities? Input validation?
-      3. **Architecture** - Does this fit the overall design? Any coupling issues?
-      4. **Simplicity** - Is this the simplest solution? Over-engineering?
-
-  gemini:
-    model: gemini-cli
+  codex:
+    model: codex-cli
     prompt: |
-      # Same as above...
+      # Same dimensions as above
 
 # Analyzer - PR analysis (before debate)
 analyzer:
   model: claude-code
   prompt: |
-    You are a senior engineer providing PR context analysis.
     Analyze this PR and provide:
     1. What this PR does
     2. Architecture/design decisions
-    3. Purpose
-    4. Trade-offs
-    5. Things to note
+    3. Affected interfaces/APIs (flag breaking changes)
+    4. Compatibility risks (rolling upgrade, serialization changes)
+    5. Feature interaction risks (callers, shared state)
+    6. Suggested review focus (specific files + line ranges)
 
-# Summarizer - final conclusion
+# Summarizer - final conclusion + verify+audit
 summarizer:
   model: claude-code
   prompt: |
@@ -177,6 +175,7 @@ Options:
   --git-remote <remote>     Git remote for PR URL detection (default: origin)
   --skip-context            Skip context gathering phase
   --no-post                 Skip post-processing (GitHub comment flow)
+  --no-conclusion           Skip final conclusion generation (for bot/CI use)
   --plan-only               Generate review plan without executing
   --reanalyze               Force re-analyze features (ignore cache)
 
@@ -324,24 +323,33 @@ Discussion features:
 ```
 1. Context Gathering (if enabled)
    │  Collects: affected modules, related PRs, call chains
+   │  Supports: Go, C++, Python, Java, Scala, TS/JS, Rust, Proto
    ↓
 2. Analyzer analyzes PR
+   │  Outputs: summary, interface changes, compatibility risks,
+   │           interaction risks, specific review focus areas
    ↓
 3. [Interactive] Post-analysis Q&A (ask specific reviewers)
    ↓
 4. Multi-round debate
    ├─ Round 1: All reviewers give INDEPENDENT opinions (parallel)
-   │           No reviewer sees others' responses yet
+   │           CLI reviewers fetch diff + read code via tools
    │           ↓
    ├─ Convergence check: Did reviewers reach consensus?
    │           ↓
    ├─ Round 2+: Reviewers see ALL previous rounds (parallel)
-   │            Each reviewer responds to others' points
-   │            Same-round reviewers see identical information
+   │            Cross-validate findings, challenge weak arguments
    │            ↓
    └─ ... (repeat until max rounds or convergence)
    ↓
-5. Summarizer produces final conclusion from full debate history
+5. Structurizer extracts issues into structured JSON
+   ↓
+6. Verify+Audit (tool-equipped)
+   │  For each issue: Read/Grep actual code to verify
+   │  Filters: false positives, by-design patterns, pre-existing issues
+   │  Re-calibrates severity based on evidence
+   ↓
+7. [Optional] Summarizer produces final conclusion (--no-conclusion to skip)
 ```
 
 ### Fair Debate Model
@@ -363,7 +371,7 @@ Before the review begins, Magpie automatically gathers system-level context to h
 
 - **Affected Modules**: Identifies which parts of the system are impacted (core, moderate, low)
 - **Related PRs**: Finds relevant past PRs from project history
-- **Call Chain Analysis**: Traces how changed code connects to the rest of the system
+- **Call Chain Analysis**: Traces how changed code connects to the rest of the system (supports Go, C++, Python, Java, Scala, TypeScript, Rust, Proto)
 
 ```
 ┌─ System Context ─────────────────────────────────────────┐
