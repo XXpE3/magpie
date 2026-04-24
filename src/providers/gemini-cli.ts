@@ -135,6 +135,7 @@ export class GeminiCliProvider implements AIProvider {
     let error: Error | null = null
     let lastActivity = Date.now()
     let lineBuf = ''  // Buffer for NDJSON line parsing
+    let stderrBuf = ''
 
     // Timeout checker - kill if no activity for too long
     const timeoutChecker = this.timeout > 0 ? setInterval(() => {
@@ -146,7 +147,8 @@ export class GeminiCliProvider implements AIProvider {
         }, 5000)
         forceKill.unref()
         done = true
-        error = new Error(`Gemini CLI timed out after ${this.timeout / 1000}s of inactivity`)
+        const stderr = stderrBuf.trim()
+        error = new Error(`Gemini CLI timed out after ${this.timeout / 1000}s of inactivity${stderr ? ': ' + stderr.slice(-500) : ''}`)
         if (resolveNext) {
           resolveNext({ chunk: null })
         }
@@ -186,8 +188,10 @@ export class GeminiCliProvider implements AIProvider {
       }
     })
 
-    child.stderr.on('data', (_data) => {
+    child.stderr.on('data', (data) => {
       lastActivity = Date.now()  // Activity on stderr also counts
+      stderrBuf += data.toString()
+      if (stderrBuf.length > 10000) stderrBuf = stderrBuf.slice(-10000)
     })
 
     child.on('close', (code) => {
@@ -208,7 +212,8 @@ export class GeminiCliProvider implements AIProvider {
       }
       done = true
       if (code !== 0 && !error) {
-        error = new Error(`Gemini CLI exited with code ${code}`)
+        const stderr = stderrBuf.trim()
+        error = new Error(`Gemini CLI exited with code ${code}${stderr ? ': ' + stderr.slice(-500) : ''}`)
       }
       if (resolveNext) {
         resolveNext({ chunk: null })
