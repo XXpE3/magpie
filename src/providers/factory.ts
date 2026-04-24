@@ -29,6 +29,12 @@ export function parseCliModel(model: string): { provider: string; cliModel?: str
   return { provider: model }
 }
 
+/** Check if a model string maps to a CLI-based provider (has tool access / can read files) */
+export function isCliModel(model: string): boolean {
+  const { provider } = parseCliModel(model)
+  return (CLI_PROVIDERS as readonly string[]).includes(provider)
+}
+
 export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex-cli' | 'gemini-cli' | 'qwen-code' | 'minimax' | 'mock' {
   const { provider } = parseCliModel(model)
   if ((CLI_PROVIDERS as readonly string[]).includes(provider)) {

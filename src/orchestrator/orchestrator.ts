@@ -298,15 +298,24 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
       this.checkInterrupt()
 
-      // Get final conclusion directly from conversation history
-      const finalConclusion = await this.getFinalConclusion()
+      let finalConclusion = ''
+      let verifiedConclusion: string | undefined
 
-      // Verify the conclusion against the actual PR/code
-      const verifiedConclusion = await this.verifyConclusion(finalConclusion)
+      if (!this.options.skipConclusion) {
+        finalConclusion = await this.getFinalConclusion()
+      }
 
       // End summarizer session for clean JSON extraction call
       this.summarizer.provider.endSession?.()
       const parsedIssues = await this.extractIssues()
+
+      if (parsedIssues.length > 0) {
+        await this.verifyIssues(parsedIssues)
+      }
+
+      if (finalConclusion && !this.options.skipConclusion) {
+        verifiedConclusion = await this.verifyConclusion(finalConclusion)
+      }
 
       return {
         prNumber: label,
@@ -536,18 +545,34 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       }
 
       this.checkInterrupt()
-      this.options.onWaiting?.('summarizer')
-      const finalConclusion = await this.getFinalConclusion()
 
-      // Verify the conclusion against the actual PR/code
-      this.options.onWaiting?.('verifier')
-      const verifiedConclusion = await this.verifyConclusion(finalConclusion)
+      let finalConclusion = ''
+      let verifiedConclusion: string | undefined
+
+      if (!this.options.skipConclusion) {
+        this.options.onWaiting?.('summarizer')
+        finalConclusion = await this.getFinalConclusion()
+      }
 
       // End summarizer session before structurization so it gets a clean,
       // non-session call. The session context (convergence + conclusion) would
       // pollute the JSON extraction and --resume ignores custom system prompts.
       this.summarizer.provider.endSession?.()
       const parsedIssues = await this.extractIssues()
+
+      // Verify+Audit: check each issue against actual code using tools.
+      // This replaces both the old text-only verifyConclusion and the
+      // downstream audit step in li-bot.
+      if (parsedIssues.length > 0) {
+        this.options.onWaiting?.('verifier')
+        await this.verifyIssues(parsedIssues)
+      }
+
+      // Legacy: if conclusion was generated and skipConclusion is false,
+      // also verify conclusion text (for CLI interactive mode)
+      if (finalConclusion && !this.options.skipConclusion) {
+        verifiedConclusion = await this.verifyConclusion(finalConclusion)
+      }
 
       return {
         prNumber: label,
@@ -770,11 +795,11 @@ Output ONLY a JSON block (no other text):
   "issues": [
     {
       "severity": "critical|high|medium|low|nitpick",
-      "category": "security|performance|error-handling|style|correctness|architecture",
+      "category": "correctness|security|performance|concurrency|resource-leak|error-handling|build|testing|documentation|architecture|compatibility|style",
       "file": "path/to/file",
       "line": 42,
       "title": "One-line summary",
-      "description": "Detailed markdown explanation (see rules below)",
+      "description": "Concise explanation for GitHub PR comment (see rules below)",
       "suggestedFix": "Brief one-line fix summary",
       "raisedBy": ["reviewer-id-1", "reviewer-id-2"]
     }
@@ -784,11 +809,17 @@ Output ONLY a JSON block (no other text):
 
 Rules:
 - Include every issue mentioned by any reviewer
-- The "description" field will be posted as a GitHub PR comment. Make it comprehensive markdown covering: (1) What the problem is, (2) Why it matters (impact/risk), (3) The original problematic code quoted in a code block, (4) The suggested fix shown as code, (5) Why the fix is correct
+- The "description" field will be posted directly as a GitHub PR inline comment. Keep it concise: (1) What the problem is, (2) Concrete impact or risk, (3) Fix suggestion if non-obvious. Reference line numbers instead of quoting large code blocks.
+- "category" MUST be one of the 12 values listed above. Choose the closest match, do not invent new categories.
 - If multiple reviewers mention the same issue, list all their IDs in raisedBy
 - Use the exact reviewer IDs: ${reviewerIds}
 - If a file path or line number is mentioned, include it; otherwise omit the field
-- Severity: critical = blocks merge, high = should fix, medium = worth fixing, low = minor, nitpick = style only${changedFilesConstraint}${this.options.language ? `\n- Write the "title", "description", and "suggestedFix" fields in ${this.options.language}. Keep JSON keys and severity/category values in English.` : ''}`
+- Severity (STRICT — when in doubt, choose LOWER):
+  critical = compilation failure, data corruption, exploitable security hole, guaranteed crash
+  high = logic error that WILL trigger, resource leak, real concurrency bug
+  medium = edge case, missing error handling, compatibility risk
+  low = code quality, minor concern
+  nitpick = style only${changedFilesConstraint}${this.options.language ? `\n- Write the "title", "description", and "suggestedFix" fields in ${this.options.language}. Keep JSON keys and severity/category values in English.` : ''}`
 
     const systemPrompt = 'You extract structured issues from code review text. Output only valid JSON.'
     const chatOpts = { disableTools: true }
@@ -897,5 +928,83 @@ Then provide your **Verified Final Conclusion** that:
     const response = await this.summarizer.provider.chat(messages, systemPrompt)
     this.trackTokens('summarizer', prompt + (systemPrompt || ''), response)
     return response
+  }
+
+  /**
+   * Verify+Audit: check each structured issue against actual code using tools.
+   * Mutates the parsedIssues array in-place: adjusts severity based on verification.
+   * This replaces the downstream audit step that was previously in li-bot.
+   */
+  private async verifyIssues(issues: MergedIssue[]): Promise<void> {
+    const issuesText = issues.map((iss, i) => {
+      const loc = iss.line ? `${iss.file}:${iss.line}` : iss.file
+      const agreement = iss.raisedBy.length >= 2
+        ? `[raised by BOTH: ${iss.raisedBy.join(', ')}]`
+        : `[raised by: ${iss.raisedBy.join(', ')} only]`
+      return `### Issue ${i} [${iss.severity}] ${agreement}\nLocation: ${loc}\nTitle: ${iss.title}\nDescription: ${iss.description}`
+    }).join('\n\n')
+
+    const prompt = `You are a strict code review auditor. You have access to the full repository via Read/Grep/Glob tools.
+
+For EACH issue below:
+1. Use Read/Grep/Glob to check the actual code and verify the claim is accurate
+2. Check if the issue is truly introduced by this PR, or pre-existing
+3. Check if the pattern is intentional/by-design (grep for similar patterns in the codebase)
+4. Re-score the severity using these strict definitions:
+   - critical: Compilation failure, data corruption, exploitable security hole, guaranteed crash
+   - high: Logic error that WILL trigger under realistic conditions, resource leak, real concurrency bug
+   - medium: Edge case that COULD trigger, missing error handling, compatibility risk
+   - low: Code quality, minor concern, pre-existing issue
+   - nitpick: Style only, or false positive (issue does not actually exist)
+
+Agreement signal: Issues raised by BOTH reviewers have higher prior probability of being real.
+Issues raised by only ONE reviewer should be scrutinized more carefully.
+
+Output ONLY a JSON block:
+\`\`\`json
+{
+  "verified": [
+    {"index": 0, "severity": "high", "reason": "Verified: null deref confirmed at line 42"},
+    {"index": 1, "severity": "nitpick", "reason": "False positive: caller already validates input at line 30"}
+  ]
+}
+\`\`\`
+
+All issues must appear in the "verified" array. Index corresponds to the issue number above.
+
+Issues to verify:
+
+${issuesText}${this.langSuffix}`
+
+    const messages: Message[] = [{ role: 'user', content: prompt }]
+    const systemPrompt = this.withLang(
+      'You are a strict code review auditor. Use Read/Grep/Glob tools to verify each issue against the actual code. Be precise — check the real code, do not guess.'
+    )
+
+    try {
+      const response = await this.summarizer.provider.chat(messages, systemPrompt)
+      this.trackTokens('verifier', prompt + (systemPrompt || ''), response)
+
+      // Parse the verification result
+      const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/)
+      const jsonStr = jsonMatch?.[1] || response
+      const match = jsonStr.match(/\{[\s\S]*"verified"\s*:\s*\[[\s\S]*?\]\s*\}/)
+      if (match) {
+        const parsed = JSON.parse(match[0])
+        if (Array.isArray(parsed.verified)) {
+          // Apply verified severities back to issues
+          for (const v of parsed.verified) {
+            const idx = v.index
+            if (idx >= 0 && idx < issues.length && typeof v.severity === 'string') {
+              issues[idx].severity = v.severity as MergedIssue['severity']
+            }
+          }
+          logger.info(`Verified ${parsed.verified.length} issues`)
+        }
+      }
+    } catch (err) {
+      // Verification failure is non-fatal — keep original severities
+      logger.warn('Issue verification failed, keeping original severities:', err)
+    }
   }
 }

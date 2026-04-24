@@ -3,34 +3,85 @@ import { spawnSync } from 'child_process'
 import type { RawReference } from '../types.js'
 
 /**
- * Extract function/class names from diff
+ * Common keywords to exclude from symbol extraction (language-spanning)
+ */
+const STOP_SYMBOLS = new Set([
+  // JS/TS
+  'get', 'set', 'new', 'for', 'if', 'do', 'var', 'let', 'const', 'return',
+  'else', 'case', 'break', 'continue', 'switch', 'while', 'try', 'catch',
+  'throw', 'typeof', 'void', 'delete', 'import', 'export', 'default', 'from',
+  'async', 'await', 'yield', 'class', 'extends', 'super', 'this',
+  // Go
+  'func', 'type', 'struct', 'interface', 'map', 'chan', 'range', 'defer',
+  'select', 'nil', 'err', 'error', 'string', 'bool', 'int', 'int32', 'int64',
+  'uint', 'uint32', 'uint64', 'float32', 'float64', 'byte', 'rune', 'len',
+  'cap', 'make', 'append', 'copy', 'close', 'panic', 'recover', 'println',
+  'true', 'false', 'init', 'main',
+  // C/C++
+  'void', 'int', 'char', 'bool', 'auto', 'long', 'short', 'unsigned',
+  'signed', 'float', 'double', 'size_t', 'nullptr', 'static', 'const',
+  'virtual', 'override', 'inline', 'explicit', 'template', 'typename',
+  'namespace', 'using', 'public', 'private', 'protected',
+  // Proto
+  'message', 'service', 'rpc', 'enum', 'oneof', 'optional', 'repeated',
+  'required', 'reserved', 'returns', 'option',
+  // Python
+  'def', 'self', 'cls', 'None', 'True', 'False', 'pass', 'with', 'lambda',
+  // Java/Scala
+  'public', 'private', 'protected', 'static', 'final', 'abstract', 'synchronized',
+  'val', 'var', 'object', 'trait', 'extends', 'with', 'override',
+])
+
+/**
+ * Extract function/class/struct names from diff (multi-language)
  */
 export function extractSymbolsFromDiff(diff: string): string[] {
   const symbols: Set<string> = new Set()
 
-  // Match function definitions: function name(, async function name(, const name = (, etc.
-  const functionPatterns = [
+  const patterns: RegExp[] = [
+    // JS/TS: function name(, async function name(
     /^\+.*(?:function|async function)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/gm,
+    // JS/TS: const name = (, const name = async (
     /^\+.*(?:const|let|var)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:async\s*)?\(/gm,
+    // JS/TS: const name = (...) =>
     /^\+.*(?:const|let|var)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/gm,
+    // JS/TS: class Name
+    /^\+.*class\s+([a-zA-Z_][a-zA-Z0-9_]*)/gm,
+    // JS/TS: method definitions in classes
+    /^\+\s+(?:async\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*[:{]/gm,
+    // JS/TS: export declarations
+    /^\+.*export\s+(?:const|let|var|function|class|async function)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gm,
+    // Go: func Name(, func (receiver) Name(
+    /^\+.*func\s+(?:\([^)]*\)\s+)?([A-Z][a-zA-Z0-9_]*)\s*\(/gm,
+    // Go: type Name struct/interface
+    /^\+.*type\s+([A-Z][a-zA-Z0-9_]*)\s+(?:struct|interface)\b/gm,
+    // C/C++: return-type FunctionName(
+    /^\+.*(?:void|int|bool|char|auto|Status|string|std::string|size_t|int32_t|int64_t|uint32_t|uint64_t|float|double)\s+([A-Z][a-zA-Z0-9_]*)\s*\(/gm,
+    // C/C++: ClassName::MethodName(
+    /^\+.*([A-Z][a-zA-Z0-9_]*)::\s*([A-Z][a-zA-Z0-9_]*)\s*\(/gm,
+    // C/C++: class/struct Name
+    /^\+.*(?:class|struct)\s+([A-Z][a-zA-Z0-9_]*)/gm,
+    // Proto: message Name, service Name, rpc Name
+    /^\+\s*(?:message|service)\s+([A-Z][a-zA-Z0-9_]*)/gm,
+    /^\+\s*rpc\s+([A-Z][a-zA-Z0-9_]*)\s*\(/gm,
+    // Python: def name(, class Name
+    /^\+\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/gm,
+    /^\+\s*class\s+([A-Z][a-zA-Z0-9_]*)/gm,
+    // Java/Scala: public/private type Name(
+    /^\+\s*(?:public|private|protected)?\s*(?:static\s+)?(?:def|void|int|boolean|String|long|double|float|[A-Z][a-zA-Z0-9_<>]*)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/gm,
   ]
 
-  // Match class definitions
-  const classPattern = /^\+.*class\s+([a-zA-Z_][a-zA-Z0-9_]*)/gm
-
-  // Match method definitions in classes
-  const methodPattern = /^\+\s+(?:async\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*[:{]/gm
-
-  // Match exported names
-  const exportPattern = /^\+.*export\s+(?:const|let|var|function|class|async function)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gm
-
-  for (const pattern of [...functionPatterns, classPattern, methodPattern, exportPattern]) {
+  for (const pattern of patterns) {
     let match
     while ((match = pattern.exec(diff)) !== null) {
-      const name = match[1]
-      // Filter out common keywords and short names
-      if (name && name.length > 2 && !['get', 'set', 'new', 'for', 'if', 'do'].includes(name)) {
+      // For C++ ClassName::MethodName pattern, capture both parts
+      const name = match[2] || match[1]
+      if (name && name.length > 2 && !STOP_SYMBOLS.has(name)) {
         symbols.add(name)
+      }
+      // Also add the class name for Class::Method patterns
+      if (match[2] && match[1] && match[1].length > 2 && !STOP_SYMBOLS.has(match[1])) {
+        symbols.add(match[1])
       }
     }
   }
@@ -53,7 +104,8 @@ export function findReferences(symbols: string[], cwd: string = process.cwd()): 
         '-n', '-H', '--no-heading',
         '-F',
         '-e', symbol,
-        '--type', 'ts', '--type', 'js',
+        '--type-add', 'code:*.{go,cpp,cc,cxx,h,hpp,hxx,c,py,java,scala,ts,tsx,js,jsx,rs,proto,cs}',
+        '--type', 'code',
       ], { cwd, encoding: 'utf-8', maxBuffer: 5 * 1024 * 1024 })
 
       const output = result.stdout || ''

@@ -56,6 +56,7 @@ export interface OrchestratorOptions {
   onPostAnalysisQA?: () => Promise<{ target: string; question: string } | null>
   onContextGathered?: (context: GatheredContext) => void  // Context gathering complete callback
   interruptState?: { interrupted: boolean }  // External interrupt signal (e.g., Ctrl+C)
+  skipConclusion?: boolean  // Skip getFinalConclusion + old verifyConclusion (bot mode)
 }
 
 /** Structured issue from a reviewer */

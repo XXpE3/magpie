@@ -3,7 +3,7 @@ import chalk from 'chalk'
 import ora from 'ora'
 import { execSync } from 'child_process'
 import { loadConfig } from '../config/loader.js'
-import { createProvider } from '../providers/factory.js'
+import { createProvider, isCliModel } from '../providers/factory.js'
 import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
 import type { Reviewer, ReviewerStatus } from '../orchestrator/types.js'
 import { createInterface } from 'readline'
@@ -55,6 +55,7 @@ export const reviewCommand = new Command('review')
   .option('--export <file>', 'Export completed review to markdown')
   .option('--skip-context', 'Skip context gathering phase')
   .option('--no-post', 'Skip post-processing (GitHub comment flow)')
+  .option('--no-conclusion', 'Skip final conclusion generation (bot mode)')
   .action(async (pr: string | undefined, options) => {
     const spinner = ora('Loading configuration...').start()
 
@@ -224,63 +225,82 @@ export const reviewCommand = new Command('review')
           }
         }
 
-        // Pre-fetch PR diff and info so all reviewers (including API-only models) get the code
-        let prDiff = ''
+        // Fetch PR metadata (title/body) — always needed
         let prTitle = ''
         let prBody = ''
-        let diffTruncationNote = ''
-        try {
-          prDiff = execSync(`gh pr diff ${prUrl}`, { encoding: 'utf-8', timeout: 60000, maxBuffer: 10 * 1024 * 1024 })
-          const originalLines = prDiff.split('\n').length
-          prDiff = filterDiff(prDiff, config.defaults.diff_exclude)
-          const filteredLines = prDiff.split('\n').length
-          if (filteredLines < originalLines) {
-            console.log(chalk.dim(`  Diff filtered: ${originalLines} → ${filteredLines} lines (excluded generated files)`))
-          }
-        } catch (e) {
-          const errMsg = e instanceof Error ? e.message : String(e)
-          // Fallback: for large PRs that exceed GitHub's 20k line limit,
-          // reconstruct diff from the per-file patches API
-          if (errMsg.includes('406') || errMsg.includes('too_large') || errMsg.includes('exceeded')) {
-            console.log(chalk.yellow(`  PR diff too large for GitHub API, fetching via files API...`))
-            try {
-              const repo = prRepo || (() => {
-                const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf-8' }).trim()
-                const m = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
-                return m ? m[1] : ''
-              })()
-              if (repo) {
-                const result = fetchLargePRDiff(repo, prNumber, {
-                  maxLines: 15000,
-                  excludePatterns: config.defaults.diff_exclude
-                })
-                prDiff = filterDiff(result.diff, config.defaults.diff_exclude)
-                if (result.truncated) {
-                  diffTruncationNote = `\n\n⚠️ NOTE: This is a large PR. ${result.summary}`
-                }
-                console.log(chalk.dim(`  Reconstructed diff: ${result.includedFiles}/${result.totalFiles} files (~${prDiff.split('\n').length} lines)`))
-                if (result.truncated) {
-                  console.log(chalk.yellow(`  ⚠ Diff truncated to fit context window. Some files excluded.`))
-                }
-              }
-            } catch (fallbackErr) {
-              console.error(chalk.yellow(`Warning: Fallback diff fetch also failed: ${fallbackErr instanceof Error ? fallbackErr.message.slice(0, 100) : fallbackErr}`))
-            }
-          } else {
-            console.error(chalk.yellow(`Warning: Could not pre-fetch PR diff: ${errMsg.slice(0, 100)}`))
-          }
-        }
         try {
           const prInfo = JSON.parse(execSync(`gh pr view ${prUrl} --json title,body`, { encoding: 'utf-8', timeout: 30000 }))
           prTitle = prInfo.title || ''
           prBody = prInfo.body || ''
         } catch {
-          // Non-fatal: reviewers can still work with just the diff
+          // Non-fatal: reviewers can still work without metadata
         }
 
-        const prPrompt = prDiff
-          ? `Please review ${prUrl}.\n\nTitle: ${prTitle}\n\nDescription:\n${prBody}${diffTruncationNote}\n\nHere is the PR diff:\n\n\`\`\`diff\n${prDiff}\`\`\`\n\nAnalyze these changes and provide your feedback. You already have the complete diff above — do NOT attempt to fetch it again.`
-          : `Please review ${prUrl}. Get the PR details and diff using any method available to you, then analyze the changes.`
+        // Check if all reviewers (+ analyzer) are CLI-based.
+        // CLI providers can fetch diff and read code themselves via tools.
+        // API providers need the diff pre-fetched and embedded in the prompt.
+        const allModels = [
+          ...Object.values(config.reviewers).map(r => r.model),
+          config.analyzer.model,
+          config.summarizer.model,
+        ]
+        const allCli = allModels.every(m => isCliModel(m))
+
+        let prPrompt: string
+        if (allCli) {
+          // CLI mode: reviewers fetch diff and read code themselves
+          console.log(chalk.dim(`  CLI-only reviewers detected — reviewers will fetch diff and read code directly`))
+          prPrompt = `Please review ${prUrl}.\n\nTitle: ${prTitle}\n\nDescription:\n${prBody}\n\nYou have full access to the repository. Use \`gh pr diff ${prUrl}\` to get the diff, then use Read/Grep tools to examine the actual source files for context. Review every changed file and function systematically.`
+        } else {
+          // API mode: pre-fetch diff and embed in prompt
+          let prDiff = ''
+          let diffTruncationNote = ''
+          try {
+            prDiff = execSync(`gh pr diff ${prUrl}`, { encoding: 'utf-8', timeout: 60000, maxBuffer: 10 * 1024 * 1024 })
+            const originalLines = prDiff.split('\n').length
+            prDiff = filterDiff(prDiff, config.defaults.diff_exclude)
+            const filteredLines = prDiff.split('\n').length
+            if (filteredLines < originalLines) {
+              console.log(chalk.dim(`  Diff filtered: ${originalLines} → ${filteredLines} lines (excluded generated files)`))
+            }
+          } catch (e) {
+            const errMsg = e instanceof Error ? e.message : String(e)
+            // Fallback: for large PRs that exceed GitHub's 20k line limit,
+            // reconstruct diff from the per-file patches API
+            if (errMsg.includes('406') || errMsg.includes('too_large') || errMsg.includes('exceeded')) {
+              console.log(chalk.yellow(`  PR diff too large for GitHub API, fetching via files API...`))
+              try {
+                const repo = prRepo || (() => {
+                  const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf-8' }).trim()
+                  const m = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
+                  return m ? m[1] : ''
+                })()
+                if (repo) {
+                  const result = fetchLargePRDiff(repo, prNumber, {
+                    maxLines: 15000,
+                    excludePatterns: config.defaults.diff_exclude
+                  })
+                  prDiff = filterDiff(result.diff, config.defaults.diff_exclude)
+                  if (result.truncated) {
+                    diffTruncationNote = `\n\n⚠️ NOTE: This is a large PR. ${result.summary}`
+                  }
+                  console.log(chalk.dim(`  Reconstructed diff: ${result.includedFiles}/${result.totalFiles} files (~${prDiff.split('\n').length} lines)`))
+                  if (result.truncated) {
+                    console.log(chalk.yellow(`  ⚠ Diff truncated to fit context window. Some files excluded.`))
+                  }
+                }
+              } catch (fallbackErr) {
+                console.error(chalk.yellow(`Warning: Fallback diff fetch also failed: ${fallbackErr instanceof Error ? fallbackErr.message.slice(0, 100) : fallbackErr}`))
+              }
+            } else {
+              console.error(chalk.yellow(`Warning: Could not pre-fetch PR diff: ${errMsg.slice(0, 100)}`))
+            }
+          }
+
+          prPrompt = prDiff
+            ? `Please review ${prUrl}.\n\nTitle: ${prTitle}\n\nDescription:\n${prBody}${diffTruncationNote}\n\nHere is the PR diff:\n\n\`\`\`diff\n${prDiff}\`\`\`\n\nAnalyze these changes and provide your feedback. You already have the complete diff above — do NOT attempt to fetch it again.`
+            : `Please review ${prUrl}. Get the PR details and diff using any method available to you, then analyze the changes.`
+        }
 
         target = {
           type: 'pr',
@@ -433,6 +453,7 @@ export const reviewCommand = new Command('review')
         checkConvergence,
         language: config.defaults.language,
         interruptState,
+        skipConclusion: options.conclusion === false,
         onWaiting: (reviewerId) => {
           // Flush previous reviewer's buffer before showing spinner
           flushBuffer()
