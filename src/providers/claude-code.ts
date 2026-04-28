@@ -37,17 +37,29 @@ export class ClaudeCodeProvider implements AIProvider {
     const prompt = this.session.shouldSendFullHistory()
       ? this.session.buildPrompt(messages, systemPrompt)
       : this.session.buildPromptLastOnly(messages)
-    const result = await withRetry(() => this.runClaude(prompt, systemPrompt, options))
-    this.session.markMessageSent()
-    return result
+    try {
+      const result = await withRetry(() => this.runClaude(prompt, systemPrompt, options))
+      this.session.markMessageSent()
+      return result
+    } catch (err) {
+      this.session.start(this.session.sessionName)
+      throw err
+    }
   }
 
   async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
     const prompt = this.session.shouldSendFullHistory()
       ? this.session.buildPrompt(messages, systemPrompt)
       : this.session.buildPromptLastOnly(messages)
-    yield* this.runClaudeStream(prompt, systemPrompt)
-    this.session.markMessageSent()
+    try {
+      yield* this.runClaudeStream(prompt, systemPrompt)
+      this.session.markMessageSent()
+    } catch (err) {
+      // Reset to a fresh session ID so the next round doesn't try to --resume
+      // or --session-id a dead/stuck session
+      this.session.start(this.session.sessionName)
+      throw err
+    }
   }
 
   // Spawn env: clear CLAUDECODE to avoid nested session detection when run from Claude Code
