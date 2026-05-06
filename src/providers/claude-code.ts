@@ -139,7 +139,10 @@ export class ClaudeCodeProvider implements AIProvider {
 
     // Build args based on session state
     // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
-    const args = ['-p', '-', '--dangerously-skip-permissions']
+    // Use --output-format stream-json --verbose so that tool activity (Read, Bash, etc.)
+    // produces stdout events, preventing the inactivity timeout from killing Claude
+    // while it's actively investigating code.
+    const args = ['-p', '-', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose']
     if (this.cliModel) {
       args.push('--model', this.cliModel)
     }
@@ -165,6 +168,7 @@ export class ClaudeCodeProvider implements AIProvider {
     let done = false
     let error: Error | null = null
     let lastActivity = Date.now()
+    let lineBuf = ''
 
     // Timeout checker - kill if no activity for too long
     const timeoutChecker = this.timeout > 0 ? setInterval(() => {
@@ -185,12 +189,29 @@ export class ClaudeCodeProvider implements AIProvider {
 
     child.stdout.on('data', (data) => {
       lastActivity = Date.now()
-      const chunk = data.toString()
-      if (resolveNext) {
-        resolveNext({ chunk })
-        resolveNext = null
-      } else {
-        chunks.push(chunk)
+      // Parse stream-json: each line is a JSON event.
+      // Every event (tool_use, tool_result, assistant, etc.) updates lastActivity.
+      // We only yield the final result text to the caller.
+      lineBuf += data.toString()
+      let idx
+      while ((idx = lineBuf.indexOf('\n')) !== -1) {
+        const line = lineBuf.slice(0, idx).trim()
+        lineBuf = lineBuf.slice(idx + 1)
+        if (!line) continue
+        try {
+          const event = JSON.parse(line)
+          if (event.type === 'result' && typeof event.result === 'string') {
+            const chunk = event.result
+            if (resolveNext) {
+              resolveNext({ chunk })
+              resolveNext = null
+            } else {
+              chunks.push(chunk)
+            }
+          }
+        } catch {
+          // Not valid JSON, ignore
+        }
       }
     })
 
