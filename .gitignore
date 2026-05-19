@@ -4,3 +4,6 @@ dist/
 .env
 .DS_Store
 docs
+.claude/
+.magpie/
+.pi/
