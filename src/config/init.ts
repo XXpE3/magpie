@@ -9,7 +9,7 @@ export interface ReviewerOption {
   model: string
   description: string
   needsApiKey: boolean
-  provider?: 'anthropic' | 'openai' | 'google'
+  provider?: 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex-cli' | 'gemini-cli' | 'ollama'
 }
 
 export const AVAILABLE_REVIEWERS: ReviewerOption[] = [
@@ -18,21 +18,24 @@ export const AVAILABLE_REVIEWERS: ReviewerOption[] = [
     name: 'Claude Code',
     model: 'claude-code',
     description: 'Uses your Claude Code subscription (no API key needed)',
-    needsApiKey: false
+    needsApiKey: false,
+    provider: 'claude-code'
   },
   {
     id: 'codex-cli',
     name: 'Codex CLI',
     model: 'codex-cli',
     description: 'Uses your OpenAI Codex CLI subscription (no API key needed)',
-    needsApiKey: false
+    needsApiKey: false,
+    provider: 'codex-cli'
   },
   {
     id: 'gemini-cli',
     name: 'Gemini CLI',
     model: 'gemini-cli',
     description: 'Uses your Gemini CLI (Google account, no API key needed)',
-    needsApiKey: false
+    needsApiKey: false,
+    provider: 'gemini-cli'
   },
   {
     id: 'claude-api',
@@ -57,6 +60,30 @@ export const AVAILABLE_REVIEWERS: ReviewerOption[] = [
     description: 'Uses Google AI API (requires GOOGLE_API_KEY)',
     needsApiKey: true,
     provider: 'google'
+  },
+  {
+    id: 'ollama-glm',
+    name: 'GLM 5.1 Cloud',
+    model: 'glm-5.1:cloud',
+    description: 'Uses local Ollama OpenAI-compatible API',
+    needsApiKey: false,
+    provider: 'ollama'
+  },
+  {
+    id: 'ollama-kimi',
+    name: 'Kimi K2.6 Cloud',
+    model: 'kimi-k2.6:cloud',
+    description: 'Uses local Ollama OpenAI-compatible API',
+    needsApiKey: false,
+    provider: 'ollama'
+  },
+  {
+    id: 'ollama-qwen',
+    name: 'Qwen 3.5 397B Cloud',
+    model: 'qwen3.5:397b-cloud',
+    description: 'Uses local Ollama OpenAI-compatible API',
+    needsApiKey: false,
+    provider: 'ollama'
   }
 ]
 
@@ -98,6 +125,7 @@ export function generateConfig(selectedReviewerIds: string[]): string {
   const needsAnthropic = selectedReviewers.some(r => r.provider === 'anthropic')
   const needsOpenai = selectedReviewers.some(r => r.provider === 'openai')
   const needsGoogle = selectedReviewers.some(r => r.provider === 'google')
+  const needsOllama = selectedReviewers.some(r => r.provider === 'ollama')
 
   // Build providers section
   let providersSection = '# AI Provider API Keys (use environment variables)\nproviders:'
@@ -116,22 +144,32 @@ export function generateConfig(selectedReviewerIds: string[]): string {
   google:
     api_key: \${GOOGLE_API_KEY}`
   }
-  if (!needsAnthropic && !needsOpenai && !needsGoogle) {
+  if (needsOllama) {
+    providersSection += `
+  ollama:
+    base_url: http://localhost:11434
+    # api_key: \${OLLAMA_API_KEY}`
+  }
+  if (!needsAnthropic && !needsOpenai && !needsGoogle && !needsOllama) {
     providersSection += ' {}'  // Empty providers if only CLI tools are used
   }
 
   // Build reviewers section
   let reviewersSection = '# Reviewer configurations\nreviewers:'
   for (const reviewer of selectedReviewers) {
+    const providerLine = reviewer.provider ? `\n    provider: ${reviewer.provider}` : ''
     reviewersSection += `
   ${reviewer.id}:
-    model: ${reviewer.model}
-    prompt: |
-      ${REVIEW_PROMPT}`
+    model: ${reviewer.model}${providerLine}`
   }
 
   // Determine analyzer model (prefer first selected reviewer)
-  const analyzerModel = selectedReviewers[0]?.model || 'claude-code'
+  const analyzerReviewer = selectedReviewers[0]
+  const analyzerModel = analyzerReviewer?.model || 'claude-code'
+  const analyzerProviderLine = analyzerReviewer?.provider ? `  provider: ${analyzerReviewer.provider}\n` : ''
+  const contextProviderComment = analyzerReviewer?.provider
+    ? `  # provider: ${analyzerReviewer.provider}  # Optional: defaults to analyzer provider\n`
+    : ''
 
   const config = `# Magpie Configuration
 
@@ -143,12 +181,15 @@ defaults:
   output_format: markdown
   check_convergence: true  # Stop early when reviewers reach consensus
 
+# Shared prompt for all reviewers
+prompt_file: prompt.txt
+
 ${reviewersSection}
 
 # Analyzer configuration - runs before debate to provide context
 analyzer:
   model: ${analyzerModel}
-  prompt: |
+${analyzerProviderLine}  prompt: |
     You are a senior engineer providing PR context analysis.
     Before the review debate begins, analyze this PR and provide:
 
@@ -165,7 +206,7 @@ analyzer:
 # Summarizer configuration
 summarizer:
   model: ${analyzerModel}
-  prompt: |
+${analyzerProviderLine}  prompt: |
     You are a neutral technical reviewer.
     Based on the full reviewer discussion, provide:
     - Points of consensus
@@ -176,7 +217,7 @@ summarizer:
 contextGatherer:
   enabled: true
   # model: ${analyzerModel}  # Optional: defaults to analyzer model
-  callChain:
+${contextProviderComment}  callChain:
     maxDepth: 2
     maxFilesToAnalyze: 20
   history:
@@ -201,6 +242,7 @@ export function initConfig(baseDir?: string, selectedReviewers?: string[]): stri
   const base = baseDir || homedir()
   const magpieDir = join(base, '.magpie')
   const configPath = join(magpieDir, 'config.yaml')
+  const promptPath = join(magpieDir, 'prompt.txt')
 
   if (existsSync(configPath)) {
     throw new Error(`Config already exists: ${configPath}`)
@@ -212,6 +254,9 @@ export function initConfig(baseDir?: string, selectedReviewers?: string[]): stri
 
   mkdirSync(magpieDir, { recursive: true })
   writeFileSync(configPath, config, 'utf-8')
+  if (!existsSync(promptPath)) {
+    writeFileSync(promptPath, REVIEW_PROMPT + '\n', 'utf-8')
+  }
 
   return configPath
 }

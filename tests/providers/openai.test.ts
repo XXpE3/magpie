@@ -24,6 +24,11 @@ describe('OpenAIProvider', () => {
     expect(provider.name).toBe('openai')
   })
 
+  it('should support a custom provider name', () => {
+    const provider = new OpenAIProvider({ apiKey: 'test', model: 'glm-5.1:cloud', name: 'ollama' })
+    expect(provider.name).toBe('ollama')
+  })
+
   it('should call chat and return response', async () => {
     const provider = new OpenAIProvider({ apiKey: 'test', model: 'gpt-4o' })
     const result = await provider.chat([{ role: 'user', content: 'Hello' }])

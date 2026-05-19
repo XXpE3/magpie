@@ -213,7 +213,7 @@ async function runDiscussion(
   const lang = config.defaults.language
   const reviewers: Reviewer[] = selectedIds.map(id => ({
     id,
-    provider: createProvider(config.reviewers[id].model, config),
+    provider: createProvider(config.reviewers[id].model, config, config.reviewers[id].provider),
     systemPrompt: buildSystemPromptWithContext(getDiscussReviewerPrompt(lang), config.reviewers[id].model)
   }))
 
@@ -222,7 +222,7 @@ async function runDiscussion(
     const daModel = config.summarizer.model
     reviewers.push({
       id: 'devil-advocate',
-      provider: createProvider(daModel, config),
+      provider: createProvider(daModel, config, config.summarizer.provider),
       systemPrompt: buildSystemPromptWithContext(getDevilAdvocatePrompt(lang), daModel)
     })
   }
@@ -233,13 +233,13 @@ async function runDiscussion(
 
   const summarizer: Reviewer = {
     id: 'summarizer',
-    provider: createProvider(config.summarizer.model, config),
+    provider: createProvider(config.summarizer.model, config, config.summarizer.provider),
     systemPrompt: buildSystemPromptWithContext(getDiscussSummarizerPrompt(lang), config.summarizer.model)
   }
 
   const analyzer: Reviewer = {
     id: 'analyzer',
-    provider: createProvider(config.analyzer.model, config),
+    provider: createProvider(config.analyzer.model, config, config.analyzer.provider),
     systemPrompt: buildSystemPromptWithContext(getDiscussAnalyzerPrompt(lang), config.analyzer.model)
   }
 

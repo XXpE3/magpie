@@ -2,7 +2,7 @@
 import { readFileSync, existsSync } from 'fs'
 import { parse } from 'yaml'
 import { homedir } from 'os'
-import { join } from 'path'
+import { dirname, isAbsolute, join } from 'path'
 import type { MagpieConfig, ReviewerConfig } from './types.js'
 import { logger } from '../utils/logger.js'
 
@@ -47,20 +47,52 @@ export function loadConfig(configPath?: string): MagpieConfig {
   const parsed = parse(content)
   const expanded = expandEnvVarsInObject(parsed) as MagpieConfig
 
-  validateConfig(expanded)
+  applySharedReviewerPrompt(expanded, path)
+  validateConfig(expanded, path)
   return expanded
 }
 
-function validateReviewerConfig(name: string, rc: ReviewerConfig): void {
+function getSharedPromptPath(config: MagpieConfig, configPath: string): string {
+  const promptFile = config.prompt_file || 'prompt.txt'
+  return isAbsolute(promptFile) ? promptFile : join(dirname(configPath), promptFile)
+}
+
+function applySharedReviewerPrompt(config: MagpieConfig, configPath: string): void {
+  if (!config.reviewers) return
+  const missingPrompt = Object.values(config.reviewers).some(rc => !rc.prompt || typeof rc.prompt !== 'string')
+  if (!missingPrompt) return
+
+  const promptPath = getSharedPromptPath(config, configPath)
+  if (!existsSync(promptPath)) return
+
+  const prompt = readFileSync(promptPath, 'utf-8').trimEnd()
+  if (prompt.trim() === '') {
+    throw new Error(`Config error: shared prompt file is empty: ${promptPath}`)
+  }
+
+  for (const rc of Object.values(config.reviewers)) {
+    if (!rc.prompt || typeof rc.prompt !== 'string') {
+      rc.prompt = prompt
+    }
+  }
+}
+
+function validateReviewerConfig(name: string, rc: ReviewerConfig, promptPath?: string): void {
+  if (!rc.provider || typeof rc.provider !== 'string') {
+    throw new Error(`Config error: ${name} is missing a "provider" field`)
+  }
   if (!rc.model || typeof rc.model !== 'string') {
     throw new Error(`Config error: ${name} is missing a "model" field`)
   }
   if (!rc.prompt || typeof rc.prompt !== 'string') {
+    if (promptPath && name.startsWith('reviewers.')) {
+      throw new Error(`Config error: ${name} is missing a "prompt" field and shared prompt file was not found: ${promptPath}`)
+    }
     throw new Error(`Config error: ${name} is missing a "prompt" field`)
   }
 }
 
-function validateConfig(config: MagpieConfig): void {
+function validateConfig(config: MagpieConfig, configPath: string): void {
   if (!config.defaults || config.defaults.max_rounds <= 0) {
     throw new Error('Config error: defaults.max_rounds must be > 0')
   }
@@ -69,8 +101,9 @@ function validateConfig(config: MagpieConfig): void {
     throw new Error('Config error: at least one reviewer must be defined')
   }
 
+  const promptPath = getSharedPromptPath(config, configPath)
   for (const [id, rc] of Object.entries(config.reviewers)) {
-    validateReviewerConfig(`reviewers.${id}`, rc)
+    validateReviewerConfig(`reviewers.${id}`, rc, promptPath)
   }
 
   if (!config.summarizer) {

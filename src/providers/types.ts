@@ -26,6 +26,7 @@ export interface ProviderOptions {
   apiKey: string
   model: string
   baseURL?: string
+  name?: string
 }
 
 export interface CliProviderOptions {

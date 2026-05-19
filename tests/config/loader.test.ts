@@ -43,17 +43,85 @@ defaults:
 reviewers:
   test-reviewer:
     model: claude-sonnet-4-20250514
+    provider: anthropic
     prompt: Test prompt
 summarizer:
   model: claude-sonnet-4-20250514
+  provider: anthropic
   prompt: Summarizer prompt
 analyzer:
   model: claude-sonnet-4-20250514
+  provider: anthropic
   prompt: Analyzer prompt
+contextGatherer:
+  enabled: true
+  model: claude-sonnet-4-20250514
+  provider: anthropic
 `)
       const config = loadConfig(configPath)
       expect(config.defaults.max_rounds).toBe(3)
       expect(config.reviewers['test-reviewer'].model).toBe('claude-sonnet-4-20250514')
+      expect(config.reviewers['test-reviewer'].provider).toBe('anthropic')
+      expect(config.summarizer.provider).toBe('anthropic')
+      expect(config.analyzer.provider).toBe('anthropic')
+      expect(config.contextGatherer?.provider).toBe('anthropic')
+    })
+
+    it('should load shared reviewer prompt from prompt.txt when reviewer prompt is omitted', () => {
+      const configPath = join(testDir, 'config.yaml')
+      const promptPath = join(testDir, 'prompt.txt')
+      writeFileSync(promptPath, 'Shared reviewer prompt\n')
+      writeFileSync(configPath, `
+providers:
+  anthropic:
+    api_key: test-key
+defaults:
+  max_rounds: 3
+  output_format: markdown
+reviewers:
+  test-reviewer:
+    model: claude-sonnet-4-20250514
+    provider: anthropic
+summarizer:
+  model: claude-sonnet-4-20250514
+  provider: anthropic
+  prompt: Summarizer prompt
+analyzer:
+  model: claude-sonnet-4-20250514
+  provider: anthropic
+  prompt: Analyzer prompt
+`)
+
+      const config = loadConfig(configPath)
+      expect(config.reviewers['test-reviewer'].prompt).toBe('Shared reviewer prompt')
+    })
+
+    it('should reject an empty shared reviewer prompt file', () => {
+      const configPath = join(testDir, 'config.yaml')
+      const promptPath = join(testDir, 'prompt.txt')
+      writeFileSync(promptPath, '\n')
+      writeFileSync(configPath, `
+providers:
+  anthropic:
+    api_key: test-key
+defaults:
+  max_rounds: 3
+  output_format: markdown
+reviewers:
+  test-reviewer:
+    model: claude-sonnet-4-20250514
+    provider: anthropic
+summarizer:
+  model: claude-sonnet-4-20250514
+  provider: anthropic
+  prompt: Summarizer prompt
+analyzer:
+  model: claude-sonnet-4-20250514
+  provider: anthropic
+  prompt: Analyzer prompt
+`)
+
+      expect(() => loadConfig(configPath)).toThrow(`Config error: shared prompt file is empty: ${promptPath}`)
     })
   })
 

@@ -19,26 +19,62 @@ Multi-AI adversarial code review tool. Multiple AI models independently review y
 | `codex-cli` | CLI | OpenAI Codex CLI (uses your subscription, no API key) |
 | `gemini-cli` | CLI | Gemini CLI (uses Google account login, no API key) |
 | `qwen-code` | CLI | Alibaba Qwen Code CLI (uses OAuth login, no API key) |
-| `claude-*` | API | Anthropic API (requires ANTHROPIC_API_KEY) |
-| `gpt-*` | API | OpenAI API (requires OPENAI_API_KEY) |
-| `gemini-*` | API | Google Gemini API (requires GOOGLE_API_KEY) |
+| `anthropic` | API | Anthropic API (requires ANTHROPIC_API_KEY) |
+| `openai` | API | OpenAI API (requires OPENAI_API_KEY) |
+| `google` | API | Google Gemini API (requires GOOGLE_API_KEY) |
 | `minimax` | API | MiniMax API (requires MINIMAX_API_KEY) |
+| `ollama` | API | Ollama OpenAI-compatible API (defaults to local Ollama) |
 | `mock` | Debug | Mock provider for testing (no API key, see [Debug Mode](#debug-mode)) |
 
 **Recommended**: Use CLI providers (claude-code, codex-cli, gemini-cli, qwen-code) - they're free with your subscriptions and don't require API keys.
 
 ### Custom API Endpoints
 
-All API providers support custom `base_url` for connecting to compatible third-party services (Azure OpenAI, Ollama, vLLM, one-api, etc.):
+All API providers support custom `base_url` for connecting to compatible third-party services (Azure OpenAI, Ollama, vLLM, one-api, etc.). Set `provider` on each reviewer, analyzer, summarizer, or context gatherer to choose a configured provider explicitly:
 
 ```yaml
 providers:
+  deepseek:
+    type: openai
+    api_key: ${DEEPSEEK_API_KEY}
+    base_url: https://api.deepseek.com/v1
   openai:
     api_key: ${OPENAI_API_KEY}
-    base_url: https://my-ollama-server:11434/v1
+    base_url: https://my-openai-proxy.example.com/v1
   anthropic:
     api_key: ${ANTHROPIC_API_KEY}
     base_url: https://my-proxy.example.com
+
+reviewers:
+  deepseek:
+    provider: deepseek
+    model: deepseek-v4-pro
+```
+
+If a reviewer does not define `prompt`, Magpie loads the shared reviewer prompt from `prompt_file`. By default this is `~/.magpie/prompt.txt`.
+
+### Ollama Cloud
+
+Ollama Cloud models are routed through the local Ollama OpenAI-compatible API when `provider: ollama` is set explicitly. Magpie does not infer providers from model IDs. If `base_url` or `OLLAMA_BASE_URL` is set to a root URL such as `http://localhost:11434`, Magpie automatically uses `http://localhost:11434/v1` for OpenAI-compatible requests. Custom paths are preserved. `OLLAMA_API_KEY` is optional and defaults to `ollama`.
+
+```yaml
+providers:
+  ollama:
+    base_url: http://localhost:11434
+    # api_key: ${OLLAMA_API_KEY}
+
+prompt_file: prompt.txt
+
+reviewers:
+  glm:
+    provider: ollama
+    model: glm-5.1:cloud
+  kimi:
+    provider: ollama
+    model: kimi-k2.6:cloud
+  qwen:
+    provider: ollama
+    model: qwen3.5:397b-cloud
 ```
 
 ## Installation
@@ -98,24 +134,22 @@ defaults:
   check_convergence: true  # Stop early when consensus reached
   language: en             # Output language (e.g., 'zh', 'en', 'ja')
 
+# Shared reviewer prompt file, relative to this config file
+prompt_file: prompt.txt
+
 # Reviewers - same perspective, different models
 reviewers:
   claude:
+    provider: claude-code
     model: claude-code
-    prompt: |
-      You are a senior engineer reviewing this PR. Be precise and evidence-based.
-      Review dimensions: Correctness, Security, Compatibility (rolling upgrade,
-      breaking changes), Feature Interaction (shared state, cross-feature conflicts),
-      Extensibility, Architecture, Performance & Resources.
-      Use Read/Grep tools to verify findings against actual code.
 
   codex:
-    model: codex-cli
-    prompt: |
-      # Same dimensions as above
+    provider: codex-cli
+    model: gpt-5.5
 
 # Analyzer - PR analysis (before debate)
 analyzer:
+  provider: claude-code
   model: claude-code
   prompt: |
     Analyze this PR and provide:
@@ -128,6 +162,7 @@ analyzer:
 
 # Summarizer - final conclusion + verify+audit
 summarizer:
+  provider: claude-code
   model: claude-code
   prompt: |
     You are a neutral technical reviewer. Based on the full reviewer discussion, provide:
@@ -139,6 +174,7 @@ summarizer:
 # Context Gatherer - system context before review (optional)
 contextGatherer:
   enabled: true              # Enable/disable context gathering
+  provider: claude-code      # Optional: defaults to analyzer provider
   model: claude-code         # Optional: defaults to analyzer model
   callChain:
     maxDepth: 2              # How deep to trace call chains

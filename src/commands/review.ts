@@ -17,6 +17,7 @@ import { handleRepoReview } from './review/repo-review.js'
 import { handleListSessions, handleResumeSession, handleExportSession } from './review/session-cmds.js'
 import { filterDiff } from '../utils/diff-filter.js'
 import { fetchLargePRDiff } from '../utils/large-diff.js'
+import { requireSystemPrompt } from '../utils/prompt.js'
 
 // Configure marked to render for terminal
 marked.setOptions({
@@ -239,12 +240,12 @@ export const reviewCommand = new Command('review')
         // Check if all reviewers (+ analyzer) are CLI-based.
         // CLI providers can fetch diff and read code themselves via tools.
         // API providers need the diff pre-fetched and embedded in the prompt.
-        const allModels = [
-          ...Object.values(config.reviewers).map(r => r.model),
-          config.analyzer.model,
-          config.summarizer.model,
+        const allReviewerConfigs = [
+          ...Object.values(config.reviewers),
+          config.analyzer,
+          config.summarizer,
         ]
-        const allCli = allModels.every(m => isCliModel(m))
+        const allCli = allReviewerConfigs.every(rc => isCliModel(config, rc.provider))
 
         let prPrompt: string
         if (allCli) {
@@ -363,22 +364,22 @@ export const reviewCommand = new Command('review')
       // Create reviewers
       const reviewers: Reviewer[] = selectedIds.map(id => ({
         id,
-        provider: createProvider(config.reviewers[id].model, config),
-        systemPrompt: config.reviewers[id].prompt
+        provider: createProvider(config.reviewers[id].model, config, config.reviewers[id].provider),
+        systemPrompt: requireSystemPrompt(`reviewers.${id}`, config.reviewers[id].prompt)
       }))
 
       // Create summarizer
       const summarizer: Reviewer = {
         id: 'summarizer',
-        provider: createProvider(config.summarizer.model, config),
-        systemPrompt: config.summarizer.prompt
+        provider: createProvider(config.summarizer.model, config, config.summarizer.provider),
+        systemPrompt: requireSystemPrompt('summarizer', config.summarizer.prompt)
       }
 
       // Create analyzer
       const analyzer: Reviewer = {
         id: 'analyzer',
-        provider: createProvider(config.analyzer.model, config),
-        systemPrompt: config.analyzer.prompt
+        provider: createProvider(config.analyzer.model, config, config.analyzer.provider),
+        systemPrompt: requireSystemPrompt('analyzer', config.analyzer.prompt)
       }
 
       // Create context gatherer (if enabled)
@@ -387,8 +388,9 @@ export const reviewCommand = new Command('review')
 
       if (contextEnabled) {
         const contextModel = config.contextGatherer?.model || config.analyzer.model
+        const contextProvider = config.contextGatherer?.provider || config.analyzer.provider
         contextGatherer = new ContextGatherer({
-          provider: createProvider(contextModel, config),
+          provider: createProvider(contextModel, config, contextProvider),
           language: config.defaults.language,
           options: {
             callChain: config.contextGatherer?.callChain,

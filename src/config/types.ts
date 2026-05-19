@@ -1,12 +1,23 @@
 // src/config/types.ts
+export type ProviderType = 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex-cli' | 'gemini-cli' | 'qwen-code' | 'minimax' | 'ollama' | 'mock'
+
 export interface ProviderConfig {
-  api_key: string
+  type?: ProviderType
+  api_key?: string
+  base_url?: string
+  enabled?: boolean
+}
+
+export interface OllamaProviderConfig {
+  type?: 'ollama' | 'openai'
+  api_key?: string
   base_url?: string
 }
 
 export interface ReviewerConfig {
+  provider: string
   model: string
-  prompt: string
+  prompt?: string
 }
 
 export interface DefaultsConfig {
@@ -31,11 +42,13 @@ export interface ContextGathererConfigOptions {
     patterns?: string[]
     maxSize?: number
   }
+  provider?: string  // Provider key from providers; defaults to analyzer provider
   model?: string  // Model to use for context analysis
 }
 
 export interface MagpieConfig {
-  providers: {
+  prompt_file?: string
+  providers: Record<string, ProviderConfig | OllamaProviderConfig | undefined> & {
     anthropic?: ProviderConfig
     openai?: ProviderConfig
     google?: ProviderConfig
@@ -43,6 +56,7 @@ export interface MagpieConfig {
     'codex-cli'?: { enabled: boolean }
     'qwen-code'?: { enabled: boolean }
     minimax?: ProviderConfig
+    ollama?: OllamaProviderConfig
   }
   mock?: boolean
   defaults: DefaultsConfig

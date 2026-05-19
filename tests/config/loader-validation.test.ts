@@ -26,15 +26,15 @@ import { parse } from 'yaml'
 import { logger } from '../../src/utils/logger.js'
 
 const validConfig: MagpieConfig = {
-  defaults: { max_rounds: 3, check_convergence: true },
+  defaults: { max_rounds: 3, output_format: 'markdown', check_convergence: true },
   providers: {
     anthropic: { api_key: 'test-key' }
   },
   reviewers: {
-    claude: { model: 'anthropic:claude-3-5-sonnet', prompt: 'Review this code' }
+    claude: { provider: 'anthropic', model: 'anthropic:claude-3-5-sonnet', prompt: 'Review this code' }
   },
-  summarizer: { model: 'anthropic:claude-3-5-sonnet', prompt: 'Summarize' },
-  analyzer: { model: 'anthropic:claude-3-5-sonnet', prompt: 'Analyze' }
+  summarizer: { provider: 'anthropic', model: 'anthropic:claude-3-5-sonnet', prompt: 'Summarize' },
+  analyzer: { provider: 'anthropic', model: 'anthropic:claude-3-5-sonnet', prompt: 'Analyze' }
 }
 
 describe('loadConfig - validation', () => {
@@ -63,23 +63,41 @@ describe('loadConfig - validation', () => {
     expect(() => loadConfig('/path/to/config.yaml')).toThrow('at least one reviewer')
   })
 
+  it('throws when reviewer missing provider', () => {
+    const bad = structuredClone(validConfig)
+    bad.reviewers = { claude: { model: 'anthropic:claude-3-5-sonnet', prompt: 'test' } as any }
+    vi.mocked(parse).mockReturnValue(bad)
+    expect(() => loadConfig('/path/to/config.yaml')).toThrow('missing a "provider" field')
+  })
+
   it('throws when reviewer missing model', () => {
     const bad = structuredClone(validConfig)
-    bad.reviewers = { claude: { model: '', prompt: 'test' } }
+    bad.reviewers = { claude: { provider: 'anthropic', model: '', prompt: 'test' } }
     vi.mocked(parse).mockReturnValue(bad)
     expect(() => loadConfig('/path/to/config.yaml')).toThrow('missing a "model" field')
   })
 
   it('throws when reviewer missing prompt', () => {
     const bad = structuredClone(validConfig)
-    bad.reviewers = { claude: { model: 'test:model', prompt: '' } }
+    bad.reviewers = { claude: { provider: 'anthropic', model: 'test:model', prompt: '' } }
     vi.mocked(parse).mockReturnValue(bad)
+    vi.mocked(existsSync).mockImplementation(path => !String(path).endsWith('prompt.txt'))
     expect(() => loadConfig('/path/to/config.yaml')).toThrow('missing a "prompt" field')
+  })
+
+  it('uses shared prompt file when reviewer prompt is omitted', () => {
+    const config = structuredClone(validConfig)
+    config.reviewers = { claude: { provider: 'anthropic', model: 'anthropic:claude-3-5-sonnet' } }
+    vi.mocked(parse).mockReturnValue(config)
+    vi.mocked(readFileSync).mockReturnValueOnce('yaml content').mockReturnValueOnce('Shared prompt\n')
+
+    const loaded = loadConfig('/path/to/config.yaml')
+    expect(loaded.reviewers.claude.prompt).toBe('Shared prompt')
   })
 
   it('throws when summarizer missing model', () => {
     const bad = structuredClone(validConfig)
-    bad.summarizer = { model: '', prompt: 'summarize' }
+    bad.summarizer = { provider: 'anthropic', model: '', prompt: 'summarize' }
     vi.mocked(parse).mockReturnValue(bad)
     expect(() => loadConfig('/path/to/config.yaml')).toThrow('summarizer is missing a "model"')
   })

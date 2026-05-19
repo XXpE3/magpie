@@ -15,6 +15,7 @@ import { StateManager } from '../../state/index.js'
 import type { ReviewSession, FeatureAnalysis, FeatureReviewResult } from '../../state/types.js'
 import { FeatureAnalyzer } from '../../feature-analyzer/index.js'
 import { FeaturePlanner } from '../../planner/feature-planner.js'
+import { requireSystemPrompt } from '../../utils/prompt.js'
 import { FOCUS_OPTIONS } from './utils.js'
 
 export interface FeatureChoice {
@@ -178,7 +179,7 @@ export async function handleRepoReview(options: { path?: string; ignore?: string
   }
 
   if (!analysis) {
-    const analyzerProvider = createProvider(config.summarizer.model, config)
+    const analyzerProvider = createProvider(config.analyzer.model, config, config.analyzer.provider)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- AIProvider.chat uses strict Message role, FeatureAnalyzerConfig uses string
     const analyzer = new FeatureAnalyzer({ provider: analyzerProvider as any })
     analysis = await analyzer.analyze(files)
@@ -315,14 +316,14 @@ export async function executeFeatureReview(
   // Create reviewers
   const reviewers = Object.entries(config.reviewers).map(([id, cfg]) => ({
     id,
-    provider: createProvider(cfg.model, config),
-    systemPrompt: cfg.prompt
+    provider: createProvider(cfg.model, config, cfg.provider),
+    systemPrompt: requireSystemPrompt(`reviewers.${id}`, cfg.prompt)
   }))
 
   const summarizer = {
     id: 'summarizer',
-    provider: createProvider(config.summarizer.model, config),
-    systemPrompt: config.summarizer.prompt
+    provider: createProvider(config.summarizer.model, config, config.summarizer.provider),
+    systemPrompt: requireSystemPrompt('summarizer', config.summarizer.prompt)
   }
 
   // Graceful Ctrl+C handling: first press marks interrupted, second press force-exits
