@@ -1,0 +1,119 @@
+tests/providers/openai.test.ts
+  s_416bd7bd0438f3::t_b44a832ce2e3b6 27-31
+src/config/types.ts
+  s_416bd7bd0438f3::t_479b8e066a1c69 20,50
+  s_df9b4e94fcd308::t_8cd169f4c9fe23 18
+  s_416bd7bd0438f3::t_f3c4558abbe211 2-3,5-8,12,45,51
+  s_416bd7bd0438f3::t_87d2b50ea73742 11,13,59
+src/commands/review.ts
+  s_d28a32f577308f::t_214eb3407c0d47 243-246,368,375,382
+  s_df9b4e94fcd308::t_16079fabb51cff 248,391
+  s_df9b4e94fcd308::t_9342c6dd5407ae 20
+  s_416bd7bd0438f3::t_2be75a476a3bad 367,374,381,393
+src/providers/types.ts
+  s_416bd7bd0438f3::t_877ad78a484424 29
+tests/config/types.test.ts
+  s_416bd7bd0438f3::t_8b09a3020ee51d 30-33
+  s_416bd7bd0438f3::t_33584cf45d8c77 3,9-14,22,25-29,37,40-49,53
+src/providers/openai.ts
+  s_416bd7bd0438f3::t_9c8e270042a2f8 11
+src/config/init.ts
+  s_416bd7bd0438f3::t_dcaa3fecb52ac4 163,184-186,245,257-259
+  s_416bd7bd0438f3::t_144ba3c7366385 12,21-22,29-30,37-38
+  s_416bd7bd0438f3::t_3edcad8edbde81 150-151
+  s_416bd7bd0438f3::t_938171a30edf4a 160,167-172,192,209,220
+  s_416bd7bd0438f3::t_877ad78a484424 63-86,128,147-149,153
+README.md
+  s_416bd7bd0438f3::t_1d6c6477a0622d 143,147,152,165,177
+  s_416bd7bd0438f3::t_0ee16dc02e6870 26,33,37-40,43,47-51,70,73,76
+  s_416bd7bd0438f3::t_b97e4aebdc0e6b 52-53,56-57,59-63,65,68-69,71-72,74-75,77
+  s_416bd7bd0438f3::t_4a9fd219bf22de 54-55,66-67,137-138
+  s_416bd7bd0438f3::t_7302bd44f4042d 64
+  s_df9b4e94fcd308::t_290be459b5c6dd 22-24,58
+  s_416bd7bd0438f3::t_533f864e331f20 148
+src/commands/review/repo-review.ts
+  s_416bd7bd0438f3::t_e597c5d6d097cd 319,325
+  s_df9b4e94fcd308::t_3bf72ea019552c 18
+  s_df9b4e94fcd308::t_764ab3f5fce0a1 182
+  s_d28a32f577308f::t_51e0478a614dcf 320,326
+src/config/loader.ts
+  s_416bd7bd0438f3::t_1931e7af8632b4 51,95,104
+  s_d28a32f577308f::t_fd95b3fb132ec7 69-72
+  s_416bd7bd0438f3::t_e62a4ef72ba7ec 5,50,55-68,73-80,88-90,106
+  s_df9b4e94fcd308::t_9f61c613ebb3aa 81-83
+src/utils/prompt.ts
+  s_df9b4e94fcd308::t_0f2ab04c12c7e3 1-6
+tests/config/init.test.ts
+  s_416bd7bd0438f3::t_3edcad8edbde81 1-2,33,47
+  s_d28a32f577308f::t_e0416f6c7306a7 35-41
+  s_416bd7bd0438f3::t_216f1fe8f85559 16,20,23,25
+  s_416bd7bd0438f3::t_ab8c6f6df61fcd 34,42-46,48
+  s_416bd7bd0438f3::t_1886d3eb899840 50-58
+src/providers/factory.ts
+  s_416bd7bd0438f3::t_a3e3f7cda73a82 125
+  s_416bd7bd0438f3::t_3edcad8edbde81 31,38-43
+  s_df9b4e94fcd308::t_3917e194023c93 70-71
+  s_df9b4e94fcd308::t_2ed7c7dca62370 49
+  s_416bd7bd0438f3::t_551d5d182e3e20 34-36
+  s_d28a32f577308f::t_5b52adb7f2f591 67
+  s_416bd7bd0438f3::t_75e75393808850 76,78
+  s_df9b4e94fcd308::t_02ca8eec4ff875 74-75,81,87,89
+  s_416bd7bd0438f3::t_57f7bf01de749f 3,54-55,57,66,68-69,72-73,122,131,143
+  s_df9b4e94fcd308::t_be26c66dafb787 25-27
+  s_416bd7bd0438f3::t_9aedb03736eb1d 30,32-33,37,44
+  s_416bd7bd0438f3::t_9b578a8a79b3be 151,153-158,160
+  s_416bd7bd0438f3::t_877ad78a484424 16,19-20,47-48,130,132-139
+  s_df9b4e94fcd308::t_295e3708d60f4f 18,21-22,56,59-63
+  s_df9b4e94fcd308::t_33e55637f2b77e 45,50-51,53
+src/commands/discuss.ts
+  s_416bd7bd0438f3::t_bb58165c1b548d 216,225,236,242
+tests/config/loader.test.ts
+  s_d28a32f577308f::t_c006dc5fad0974 98-115,117-119,121-124
+  s_df9b4e94fcd308::t_d72a2e14a3a38b 87,91,116,120
+  s_416bd7bd0438f3::t_f66de2ed8751c0 69-86,88-90,92-97
+  s_416bd7bd0438f3::t_18c5f9cd75aeee 46,50,54,56-59,64-67
+tests/providers/factory.test.ts
+  s_416bd7bd0438f3::t_583b4ea0c12f64 142,144-147,152-160
+  s_416bd7bd0438f3::t_3edcad8edbde81 40,44,148-151,161-162
+  s_df9b4e94fcd308::t_fe1a978c289143 84-95
+  s_d28a32f577308f::t_8c2f401babefad 25
+  s_416bd7bd0438f3::t_a063ad93504e78 69,72-81
+  s_df9b4e94fcd308::t_10290fc13bb3e9 3,11-13,15-17,19,21-22,26-28,31-39,41-42,47-49,52-54,57-59,62-64,67-68,100-105,107,109-118,136,139
+  s_df9b4e94fcd308::t_6b097efcf57124 96-97,163-164
+  s_416bd7bd0438f3::t_400f862f8dd2d9 122-123,125
+tests/config/loader-validation.test.ts
+  s_416bd7bd0438f3::t_56b125cf917017 84,88-89,91-95
+  s_df9b4e94fcd308::t_a917b9142a9739 29,34,36-37,66-72,75,82,90,100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.9",
+  "base_commit_sha": "14e173e56d24d87a270a8ad78e1cc17982ca55ef",
+  "prompts": {},
+  "sessions": {
+    "s_416bd7bd0438f3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e3e78-fa18-73d2-ba63-920e32075edf",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Shima Rin <xxpe3@nav.moe>"
+    },
+    "s_d28a32f577308f": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019e3f04-5ed8-71e6-b70c-14f1b3821256",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Shima Rin <xxpe3@nav.moe>"
+    },
+    "s_df9b4e94fcd308": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019e3f0b-1541-7653-b3d8-1cd422278200",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Shima Rin <xxpe3@nav.moe>"
+    }
+  }
+}
