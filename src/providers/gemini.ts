@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
-import type { AIProvider, Message, ProviderOptions } from './types.js'
+import type { AIProvider, Message, ProviderOptions, ChatStreamOptions } from './types.js'
 import { withRetry } from '../utils/retry.js'
 
 export class GeminiProvider implements AIProvider {
@@ -35,7 +35,7 @@ export class GeminiProvider implements AIProvider {
     return result.response.text()
   }
 
-  async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  async *chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const model = this.client.getGenerativeModel({
       model: this.model,
       systemInstruction: systemPrompt ? { role: 'user', parts: [{ text: systemPrompt }] } : undefined
@@ -54,6 +54,7 @@ export class GeminiProvider implements AIProvider {
     for await (const chunk of result.stream) {
       const text = chunk.text()
       if (text) {
+        options?.onActivity?.({ kind: 'output', label: 'text' })
         yield text
       }
     }

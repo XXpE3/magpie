@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, CliProviderOptions, ChatOptions } from './types.js'
+import type { AIProvider, Message, CliProviderOptions, ChatOptions, ChatStreamOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { logger } from '../utils/logger.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
@@ -47,12 +47,12 @@ export class QwenCodeProvider implements AIProvider {
     }
   }
 
-  async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  async *chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const prompt = this.session.shouldSendFullHistory()
       ? this.session.buildPrompt(messages, systemPrompt)
       : this.session.buildPromptLastOnly(messages)
     try {
-      yield* this.runQwenStream(prompt, systemPrompt)
+      yield* this.runQwenStream(prompt, systemPrompt, options)
       this.session.markMessageSent()
     } catch (err) {
       this.session.start(this.session.sessionName)
@@ -109,7 +109,7 @@ export class QwenCodeProvider implements AIProvider {
     })
   }
 
-  private async *runQwenStream(prompt: string, systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  private async *runQwenStream(prompt: string, systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
 
     // Limit session turns to prevent autonomous tool abuse
@@ -148,7 +148,9 @@ export class QwenCodeProvider implements AIProvider {
 
     child.stdout.on('data', (data) => {
       lastActivity = Date.now()
+      options?.onActivity?.({ kind: 'stdout' })
       const chunk = data.toString()
+      options?.onActivity?.({ kind: 'output', label: 'text' })
       if (resolveNext) {
         resolveNext({ chunk })
         resolveNext = null
@@ -159,6 +161,7 @@ export class QwenCodeProvider implements AIProvider {
 
     child.stderr.on('data', (_data) => {
       lastActivity = Date.now()  // Activity on stderr also counts
+      options?.onActivity?.({ kind: 'stderr' })
     })
 
     child.on('close', (code) => {

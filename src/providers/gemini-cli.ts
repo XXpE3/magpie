@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, CliProviderOptions } from './types.js'
+import type { AIProvider, Message, CliProviderOptions, ChatStreamOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
@@ -51,12 +51,12 @@ export class GeminiCliProvider implements AIProvider {
     }
   }
 
-  async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  async *chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
       ? this.session.buildPromptLastOnly(messages)
       : this.session.buildPrompt(messages, systemPrompt)
     try {
-      yield* this.runGeminiStream(prompt)
+      yield* this.runGeminiStream(prompt, options)
       this.session.markMessageSent()
     } catch (err) {
       this.startSession(this.session.sessionName)
@@ -123,7 +123,7 @@ export class GeminiCliProvider implements AIProvider {
     })
   }
 
-  private async *runGeminiStream(prompt: string): AsyncGenerator<string, void, unknown> {
+  private async *runGeminiStream(prompt: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
 
     const args = ['-y', '-o', 'stream-json', '-p', '-']
@@ -166,6 +166,7 @@ export class GeminiCliProvider implements AIProvider {
     }, 10000) : null  // Check every 10s
 
     const pushChunk = (chunk: string) => {
+      options?.onActivity?.({ kind: 'output', label: 'assistant message' })
       if (resolveNext) {
         resolveNext({ chunk })
         resolveNext = null
@@ -176,6 +177,7 @@ export class GeminiCliProvider implements AIProvider {
 
     child.stdout.on('data', (data) => {
       lastActivity = Date.now()
+      options?.onActivity?.({ kind: 'stdout' })
       lineBuf += data.toString()
 
       // Parse complete NDJSON lines
@@ -187,6 +189,7 @@ export class GeminiCliProvider implements AIProvider {
         if (!trimmed) continue
         try {
           const event = JSON.parse(trimmed)
+          options?.onActivity?.({ kind: 'tool', label: event.type })
           if (event.type === 'init' && event.session_id && this.sessionEnabled) {
             this.session.sessionId = event.session_id
           } else if (event.type === 'message' && event.role === 'assistant' && event.content) {
@@ -200,6 +203,7 @@ export class GeminiCliProvider implements AIProvider {
 
     child.stderr.on('data', (data) => {
       lastActivity = Date.now()  // Activity on stderr also counts
+      options?.onActivity?.({ kind: 'stderr' })
       stderrBuf += data.toString()
       if (stderrBuf.length > 10000) stderrBuf = stderrBuf.slice(-10000)
     })
@@ -211,6 +215,7 @@ export class GeminiCliProvider implements AIProvider {
       if (lineBuf.trim()) {
         try {
           const event = JSON.parse(lineBuf.trim())
+          options?.onActivity?.({ kind: 'tool', label: event.type })
           if (event.type === 'init' && event.session_id && this.sessionEnabled) {
             this.session.sessionId = event.session_id
           } else if (event.type === 'message' && event.role === 'assistant' && event.content) {

@@ -14,6 +14,7 @@ import TerminalRenderer from 'marked-terminal'
 import { StateManager } from '../state/index.js'
 import type { DiscussSession, DiscussRound } from '../state/types.js'
 import { loadProjectContext } from '../utils/context-loader.js'
+import { StatusRenderer, StatusTracker } from '../status/index.js'
 
 marked.setOptions({
   renderer: new TerminalRenderer({
@@ -269,6 +270,8 @@ async function runDiscussion(
   let currentReviewer = ''
   let currentRound = 1
   let messageBuffer = ''
+  let currentHeaderPrinted = false
+  let activeStream: { reviewerId: string; startTime: number; outputChars: number; chunkCount: number } | null = null
 
   const spinnerRef: {
     spinner: ReturnType<typeof ora> | null
@@ -276,24 +279,63 @@ async function runDiscussion(
     parallelStatuses: ReviewerStatus[] | null
   } = { spinner: null, interval: null, parallelStatuses: null }
 
+  const statusRenderer = new StatusRenderer()
+  const status = new StatusTracker(snapshot => statusRenderer.render(snapshot), {
+    quietMs: 30_000,
+    stalledMs: 60_000,
+  })
+  status.start()
+
+  const formatChars = (chars = 0): string => chars >= 1000 ? `${(chars / 1000).toFixed(1)}k` : `${chars}`
+  const elapsedSeconds = (reviewerStatus: ReviewerStatus): number => {
+    if (reviewerStatus.duration !== undefined) return reviewerStatus.duration
+    if (!reviewerStatus.startTime) return 0
+    return (Date.now() - reviewerStatus.startTime) / 1000
+  }
   const formatParallelStatus = (round: number, statuses: ReviewerStatus[]): string => {
     const statusParts = statuses.map(s => {
       if (s.status === 'done') {
-        return chalk.green(`✓ ${s.reviewerId}`) + chalk.dim(` (${s.duration?.toFixed(1)}s)`)
+        return chalk.green(`${s.reviewerId}:✓${elapsedSeconds(s).toFixed(1)}s`)
+      } else if (s.status === 'error') {
+        return chalk.red(`${s.reviewerId}:✗${elapsedSeconds(s).toFixed(1)}s`)
+      } else if (s.status === 'stalled') {
+        return chalk.yellow(`${s.reviewerId}:⚠${s.stalledFor ?? Math.floor(elapsedSeconds(s))}s`)
+      } else if (s.status === 'streaming') {
+        return chalk.cyan(`${s.reviewerId}:▸${formatChars(s.outputChars)}c`)
       } else if (s.status === 'thinking') {
-        return chalk.yellow(`⋯ ${s.reviewerId}`)
+        return chalk.yellow(`${s.reviewerId}:…${Math.floor(elapsedSeconds(s))}s`)
       } else {
-        return chalk.dim(`○ ${s.reviewerId}`)
+        return chalk.dim(`${s.reviewerId}:○`)
       }
     })
-    return `Round ${round}: [${statusParts.join(' | ')}]`
+    return `Round ${round}/${maxRounds}: parallel discussion [${statusParts.join(' ')}]`
+  }
+
+  const printMessageHeader = (reviewerId: string) => {
+    if (reviewerId === 'analyzer') {
+      console.log(chalk.magenta.bold(`\n${'─'.repeat(50)}`))
+      console.log(chalk.magenta.bold(`  Analysis`))
+      console.log(chalk.magenta.bold(`${'─'.repeat(50)}\n`))
+    } else {
+      console.log(chalk.cyan.bold(`\n┌─ ${reviewerId} `) + chalk.dim(`[Round ${currentRound}/${maxRounds}]`))
+      console.log(chalk.cyan(`│`))
+    }
+    currentHeaderPrinted = true
   }
 
   const flushBuffer = () => {
+    if (spinnerRef.interval) { clearInterval(spinnerRef.interval); spinnerRef.interval = null }
+    if (spinnerRef.spinner) { spinnerRef.spinner.stop(); spinnerRef.spinner = null }
+    statusRenderer.clear()
     if (messageBuffer) {
+      if (!currentHeaderPrinted && currentReviewer) {
+        printMessageHeader(currentReviewer)
+      }
       console.log(marked(messageBuffer))
       messageBuffer = ''
+      currentHeaderPrinted = false
     }
+    activeStream = null
   }
 
   const orchestrator = new DebateOrchestrator(reviewers, summarizer, analyzer, {
@@ -302,29 +344,32 @@ async function runDiscussion(
     checkConvergence,
     language: lang,
     interruptState,
+    status,
     onWaiting: (reviewerId) => {
       flushBuffer()
-      if (spinnerRef.spinner) spinnerRef.spinner.stop()
-      if (spinnerRef.interval) { clearInterval(spinnerRef.interval); spinnerRef.interval = null }
 
       if (reviewerId === 'convergence-check') {
         console.log(chalk.yellow.bold(`\n┌─ Convergence Judge ─────────────────────────`))
       }
-
       const isParallelRound = reviewerId.startsWith('round-')
-      const baseLabel = reviewerId === 'analyzer' ? 'Analyzing topic' :
-                   reviewerId === 'summarizer' ? 'Generating final conclusion' :
-                   reviewerId === 'verifier' ? 'Verifying conclusion against code' :
-                   reviewerId === 'convergence-check' ? 'Evaluating consensus' :
-                   isParallelRound ? `Round ${reviewerId.split('-')[1]}: Starting parallel discussion` :
-                   `${reviewerId} is thinking`
+      const baseLabel = reviewerId === 'analyzer' ? 'Phase: analyzing topic' :
+                   reviewerId === 'summarizer' ? 'Phase: final summary' :
+                   reviewerId === 'verifier' ? 'Phase: verifying conclusion' :
+                   reviewerId === 'convergence-check' ? 'Phase: convergence check' :
+                   isParallelRound ? `Round ${reviewerId.split('-')[1]}/${maxRounds}: parallel discussion` :
+                   `Phase: ${reviewerId} thinking`
 
       const updateSpinner = () => {
         const joke = getRandomJoke()
         if (spinnerRef.spinner) {
           if (spinnerRef.parallelStatuses && isParallelRound) {
             const round = parseInt(reviewerId.split('-')[1])
-            const statusLine = formatParallelStatus(round, spinnerRef.parallelStatuses)
+            spinnerRef.spinner.text = formatParallelStatus(round, spinnerRef.parallelStatuses)
+          } else if (activeStream) {
+            const elapsed = (Date.now() - activeStream.startTime) / 1000
+            const statusLine = activeStream.chunkCount > 0
+              ? `${baseLabel} [${chalk.cyan(`▸ ${reviewerId}`)}${chalk.dim(` ${formatChars(activeStream.outputChars)} chars`)}]`
+              : `${baseLabel} [${chalk.yellow(`… ${reviewerId}`)}${chalk.dim(` ${Math.floor(elapsed)}s`)}]`
             spinnerRef.spinner.text = `${statusLine} ${chalk.dim(`| ${joke}`)}`
           } else {
             spinnerRef.spinner.text = `${baseLabel}... ${chalk.dim(`| ${joke}`)}`
@@ -333,36 +378,50 @@ async function runDiscussion(
       }
 
       spinnerRef.parallelStatuses = null
+      activeStream = reviewerId === 'analyzer'
+        ? { reviewerId, startTime: Date.now(), outputChars: 0, chunkCount: 0 }
+        : null
       spinnerRef.spinner = ora({ text: `${baseLabel}...`, discardStdin: false }).start()
       updateSpinner()
       spinnerRef.interval = setInterval(updateSpinner, 8000)
     },
     onParallelStatus: (round, statuses) => {
       spinnerRef.parallelStatuses = statuses
+      // Immediately update spinner to show every reviewer; skip jokes here to keep all statuses visible.
       if (spinnerRef.spinner) {
-        const joke = getRandomJoke()
-        const statusLine = formatParallelStatus(round, statuses)
-        spinnerRef.spinner.text = `${statusLine} ${chalk.dim(`| ${joke}`)}`
+        spinnerRef.spinner.text = formatParallelStatus(round, statuses)
       }
     },
     onMessage: (reviewerId, chunk) => {
-      if (spinnerRef.interval) { clearInterval(spinnerRef.interval); spinnerRef.interval = null }
-      if (spinnerRef.spinner) { spinnerRef.spinner.stop(); spinnerRef.spinner = null }
+      if (reviewerId === 'analyzer') {
+        if (reviewerId !== currentReviewer) {
+          if (currentReviewer || messageBuffer) {
+            flushBuffer()
+          }
+          currentReviewer = reviewerId
+          currentHeaderPrinted = false
+        }
+        messageBuffer += chunk
+        if (activeStream) {
+          activeStream.outputChars += chunk.length
+          activeStream.chunkCount += 1
+          if (spinnerRef.spinner) {
+            const joke = getRandomJoke()
+            spinnerRef.spinner.text = `Phase: analyzing topic [${chalk.cyan(`▸ ${reviewerId}`)}${chalk.dim(` ${formatChars(activeStream.outputChars)} chars`)}] ${chalk.dim(`| ${joke}`)}`
+          }
+        }
+        return
+      }
+
       if (reviewerId !== currentReviewer) {
         flushBuffer()
         currentReviewer = reviewerId
-        if (reviewerId === 'analyzer') {
-          console.log(chalk.magenta.bold(`\n${'─'.repeat(50)}`))
-          console.log(chalk.magenta.bold(`  Analysis`))
-          console.log(chalk.magenta.bold(`${'─'.repeat(50)}\n`))
-        } else {
-          console.log(chalk.cyan.bold(`\n┌─ ${reviewerId} `) + chalk.dim(`[Round ${currentRound}/${maxRounds}]`))
-          console.log(chalk.cyan(`│`))
-        }
+        printMessageHeader(reviewerId)
       }
       messageBuffer += chunk
     },
     onRoundComplete: (round, converged) => {
+      statusRenderer.clear()
       console.log()
       if (converged) {
         console.log(chalk.yellow(`└─ Verdict: `) + chalk.green.bold(`CONVERGED`))
@@ -385,7 +444,13 @@ async function runDiscussion(
     } : undefined
   })
 
-  const result = await orchestrator.runStreaming('Discussion', prompt)
+  let result: DebateResult
+  try {
+    result = await orchestrator.runStreaming('Discussion', prompt)
+  } finally {
+    status.stop()
+    statusRenderer.clear()
+  }
 
   flushBuffer()
   if (spinnerRef.interval) { clearInterval(spinnerRef.interval); spinnerRef.interval = null }

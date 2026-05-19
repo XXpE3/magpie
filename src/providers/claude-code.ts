@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, CliProviderOptions, ChatOptions } from './types.js'
+import type { AIProvider, Message, CliProviderOptions, ChatOptions, ChatStreamOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
@@ -47,12 +47,12 @@ export class ClaudeCodeProvider implements AIProvider {
     }
   }
 
-  async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  async *chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const prompt = this.session.shouldSendFullHistory()
       ? this.session.buildPrompt(messages, systemPrompt)
       : this.session.buildPromptLastOnly(messages)
     try {
-      yield* this.runClaudeStream(prompt, systemPrompt)
+      yield* this.runClaudeStream(prompt, systemPrompt, options)
       this.session.markMessageSent()
     } catch (err) {
       // Reset to a fresh session ID so the next round doesn't try to --resume
@@ -134,7 +134,7 @@ export class ClaudeCodeProvider implements AIProvider {
     })
   }
 
-  private async *runClaudeStream(prompt: string, systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  private async *runClaudeStream(prompt: string, systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
 
     // Build args based on session state
@@ -189,6 +189,7 @@ export class ClaudeCodeProvider implements AIProvider {
 
     child.stdout.on('data', (data) => {
       lastActivity = Date.now()
+      options?.onActivity?.({ kind: 'stdout' })
       // Parse stream-json: each line is a JSON event.
       // Every event (tool_use, tool_result, assistant, etc.) updates lastActivity.
       // We only yield the final result text to the caller.
@@ -200,8 +201,10 @@ export class ClaudeCodeProvider implements AIProvider {
         if (!line) continue
         try {
           const event = JSON.parse(line)
+          options?.onActivity?.({ kind: 'tool', label: event.type })
           if (event.type === 'result' && typeof event.result === 'string') {
             const chunk = event.result
+            options?.onActivity?.({ kind: 'output', label: 'result' })
             if (resolveNext) {
               resolveNext({ chunk })
               resolveNext = null
@@ -218,6 +221,7 @@ export class ClaudeCodeProvider implements AIProvider {
     let stderrOutput = ''
     child.stderr.on('data', (data) => {
       lastActivity = Date.now()  // Activity on stderr also counts
+      options?.onActivity?.({ kind: 'stderr' })
       stderrOutput += data.toString()
     })
 

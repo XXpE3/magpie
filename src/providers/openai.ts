@@ -1,5 +1,5 @@
 import OpenAI from 'openai'
-import type { AIProvider, Message, ProviderOptions } from './types.js'
+import type { AIProvider, Message, ProviderOptions, ChatStreamOptions } from './types.js'
 import { withRetry } from '../utils/retry.js'
 
 export class OpenAIProvider implements AIProvider {
@@ -35,7 +35,7 @@ export class OpenAIProvider implements AIProvider {
     return response.choices[0]?.message?.content || ''
   }
 
-  async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  async *chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const msgs: OpenAI.Chat.ChatCompletionMessageParam[] = []
 
     if (systemPrompt) {
@@ -57,6 +57,7 @@ export class OpenAIProvider implements AIProvider {
       for await (const chunk of stream) {
         const content = chunk.choices[0]?.delta?.content
         if (content) {
+          options?.onActivity?.({ kind: 'output', label: 'text' })
           yield content
         }
       }

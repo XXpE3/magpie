@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { AIProvider, Message, ProviderOptions } from './types.js'
+import type { AIProvider, Message, ProviderOptions, ChatStreamOptions } from './types.js'
 import { withRetry } from '../utils/retry.js'
 
 export class AnthropicProvider implements AIProvider {
@@ -29,7 +29,7 @@ export class AnthropicProvider implements AIProvider {
     return textBlock?.type === 'text' ? textBlock.text : ''
   }
 
-  async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  async *chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const stream = this.client.messages.stream({
       model: this.model,
       max_tokens: 4096,
@@ -43,6 +43,7 @@ export class AnthropicProvider implements AIProvider {
     try {
       for await (const event of stream) {
         if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          options?.onActivity?.({ kind: 'output', label: 'text' })
           yield event.delta.text
         }
       }

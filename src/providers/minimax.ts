@@ -1,4 +1,4 @@
-import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
+import type { AIProvider, Message, ProviderOptions, ChatOptions, ChatStreamOptions } from './types.js'
 
 /**
  * MiniMax provider using their OpenAI-compatible API.
@@ -118,9 +118,11 @@ export class MiniMaxProvider implements AIProvider {
     return content.trim()
   }
 
-  async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  async *chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     // MiniMax supports streaming but for simplicity, use non-streaming and yield result
+    options?.onActivity?.({ kind: 'request', label: 'chat' })
     const result = await this.chat(messages, systemPrompt)
+    options?.onActivity?.({ kind: 'output', label: 'result' })
     yield result
   }
 }

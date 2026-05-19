@@ -1,5 +1,6 @@
 // src/orchestrator/orchestrator.ts
 import type { Message } from '../providers/types.js'
+import type { TaskPhase } from '../status/types.js'
 import type {
   Reviewer,
   DebateMessage,
@@ -14,6 +15,9 @@ import type { GatheredContext } from '../context-gatherer/types.js'
 import { parseReviewerOutput, parseFocusAreas } from './issue-parser.js'
 import { formatCallChainForReviewer } from '../context-gatherer/collectors/reference-collector.js'
 import { logger } from '../utils/logger.js'
+
+const LEGACY_REVIEWER_STALL_THRESHOLD_MS = 60_000
+const LEGACY_REVIEWER_STALL_CHECK_INTERVAL_MS = 1_000
 
 export class InterruptedError extends Error {
   constructor() { super('Interrupted by user') }
@@ -145,6 +149,66 @@ export class DebateOrchestrator {
     return usage
   }
 
+  private async collectStream(
+    taskId: string,
+    phase: TaskPhase,
+    reviewer: Reviewer,
+    messages: Message[],
+    onChunk?: (chunk: string) => void
+  ): Promise<string> {
+    this.options.status?.begin(taskId, phase, reviewer.id)
+    let fullResponse = ''
+
+    try {
+      for await (const chunk of reviewer.provider.chatStream(
+        messages,
+        this.withLang(reviewer.systemPrompt),
+        {
+          onActivity: activity => {
+            this.options.status?.activity(taskId, activity.label ?? activity.kind)
+          },
+        }
+      )) {
+        fullResponse += chunk
+        this.options.status?.output(taskId, chunk)
+        onChunk?.(chunk)
+      }
+
+      this.options.status?.done(taskId)
+      return fullResponse
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.toLowerCase().includes('timed out')) {
+        this.options.status?.timeout(taskId, error)
+      } else {
+        this.options.status?.error(taskId, error)
+      }
+      throw error
+    }
+  }
+
+  private async trackedPromise<T>(
+    taskId: string,
+    phase: TaskPhase,
+    label: string,
+    run: () => Promise<T>
+  ): Promise<T> {
+    this.options.status?.begin(taskId, phase, label)
+    try {
+      const result = await run()
+      this.options.status?.done(taskId)
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.toLowerCase().includes('timed out')) {
+        this.options.status?.timeout(taskId, error)
+      } else {
+        this.options.status?.error(taskId, error)
+      }
+      throw error
+    }
+  }
+
   // Check if reviewers have converged (reached consensus)
   private async checkConvergence(): Promise<boolean> {
     if (this.conversationHistory.length < this.reviewers.length) {
@@ -190,9 +254,14 @@ First, provide a brief reasoning (2-3 sentences) explaining your judgment.
 Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED`
 
     const messages: Message[] = [{ role: 'user', content: prompt }]
-    const response = await this.summarizer.provider.chat(
-      messages,
-      'You are a strict consensus judge. Be VERY conservative - if there is ANY doubt, respond NOT_CONVERGED. Provide brief reasoning, then on the last line respond with exactly one word: CONVERGED or NOT_CONVERGED.'
+    const response = await this.trackedPromise(
+      'convergence',
+      'convergence',
+      'convergence check',
+      () => this.summarizer.provider.chat(
+        messages,
+        'You are a strict consensus judge. Be VERY conservative - if there is ANY doubt, respond NOT_CONVERGED. Provide brief reasoning, then on the last line respond with exactly one word: CONVERGED or NOT_CONVERGED.'
+      )
     )
 
     // Parse response - extract verdict from last line, rest is reasoning
@@ -357,10 +426,13 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       const contextPromise = this.contextGatherer
         ? (async () => {
             this.options.onWaiting?.('context-gatherer')
+            this.options.status?.begin('context', 'context', 'context gathering')
             try {
               const diff = this.extractDiffFromPrompt(prompt)
               this.gatheredContext = await this.contextGatherer!.gather(diff, label, 'main')
+              this.options.status?.done('context')
             } catch (error) {
+              this.options.status?.error('context', error)
               logger.warn('Context gathering failed:', error)
             }
           })()
@@ -369,10 +441,13 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       const analysisPromise = (async () => {
         const analyzeMessages: Message[] = [{ role: 'user', content: prompt }]
         this.options.onWaiting?.('analyzer')
-        for await (const chunk of this.analyzer.provider.chatStream(analyzeMessages, this.withLang(this.analyzer.systemPrompt))) {
-          this.analysis += chunk
-          this.options.onMessage?.('analyzer', chunk)
-        }
+        this.analysis = await this.collectStream(
+          'analyzer',
+          'analyzer',
+          this.analyzer,
+          analyzeMessages,
+          chunk => this.options.onMessage?.('analyzer', chunk)
+        )
         this.trackTokens('analyzer', prompt + (this.analyzer.systemPrompt || ''), this.analysis)
       })()
 
@@ -405,12 +480,14 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
             content: `Based on the analysis above, please answer this question:\n\n${qa.question}`
           }]
 
-          let qaResponse = ''
           this.options.onWaiting?.(targetReviewer.id)
-          for await (const chunk of targetReviewer.provider.chatStream(qaMessages, this.withLang(targetReviewer.systemPrompt))) {
-            qaResponse += chunk
-            this.options.onMessage?.(targetReviewer.id, chunk)
-          }
+          const qaResponse = await this.collectStream(
+            `reviewer:${targetReviewer.id}:qa`,
+            'reviewer',
+            targetReviewer,
+            qaMessages,
+            chunk => this.options.onMessage?.(targetReviewer.id, chunk)
+          )
 
           // Track tokens and add to history
           this.trackTokens(targetReviewer.id, qa.question, qaResponse)
@@ -449,60 +526,107 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
           messages: this.buildMessages(reviewer.id)
         }))
 
-        // Initialize status tracking for parallel execution
-        const statuses: ReviewerStatus[] = this.reviewers.map(r => ({
-          reviewerId: r.id,
-          status: 'pending' as const
-        }))
-
-        // Execute all reviewers in parallel with status tracking
+        // Execute all reviewers in parallel with unified status tracking.
+        // Also keep the legacy onParallelStatus callback alive for external callers.
         this.options.onWaiting?.(`round-${round}`)
-        this.options.onParallelStatus?.(round, statuses)
+        this.options.status?.pendingMany(reviewerTasks.map(({ reviewer }) => ({
+          id: `reviewer:${reviewer.id}`,
+          phase: 'reviewer',
+          label: reviewer.id,
+        })))
 
-        const results = await Promise.all(
-          reviewerTasks.map(async ({ reviewer, messages }, index) => {
-            statuses[index] = {
-              reviewerId: reviewer.id,
-              status: 'thinking',
-              startTime: Date.now()
+        const legacyStatuses: ReviewerStatus[] = reviewerTasks.map(({ reviewer }) => ({
+          reviewerId: reviewer.id,
+          status: 'pending' as const,
+          outputChars: 0,
+          chunkCount: 0,
+        }))
+        const emitLegacyStatus = () => this.options.onParallelStatus?.(round, legacyStatuses)
+        const updateLegacyStatus = (index: number, next: Partial<ReviewerStatus>) => {
+          legacyStatuses[index] = { ...legacyStatuses[index], ...next }
+          emitLegacyStatus()
+        }
+        const markLegacyStalledReviewers = () => {
+          if (!this.options.onParallelStatus) return
+          const now = Date.now()
+          let changed = false
+
+          for (let index = 0; index < legacyStatuses.length; index++) {
+            const status = legacyStatuses[index]
+            if (!['thinking', 'streaming', 'stalled'].includes(status.status)) continue
+            const lastActivityAt = status.lastActivityAt ?? status.startTime
+            if (!lastActivityAt) continue
+
+            const idleMs = now - lastActivityAt
+            if (idleMs <= LEGACY_REVIEWER_STALL_THRESHOLD_MS) continue
+
+            const stalledFor = Math.floor(idleMs / 1000)
+            if (status.status !== 'stalled' || status.stalledFor !== stalledFor) {
+              legacyStatuses[index] = { ...status, status: 'stalled', stalledFor }
+              changed = true
             }
-            this.options.onParallelStatus?.(round, statuses)
+          }
 
-            try {
-              let fullResponse = ''
-              for await (const chunk of reviewer.provider.chatStream(messages, this.withLang(reviewer.systemPrompt))) {
-                fullResponse += chunk
-              }
+          if (changed) emitLegacyStatus()
+        }
+        emitLegacyStatus()
 
-              const endTime = Date.now()
-              const startTime = statuses[index].startTime!
-              statuses[index] = {
-                reviewerId: reviewer.id,
-                status: 'done',
-                startTime,
-                endTime,
-                duration: (endTime - startTime) / 1000
-              }
-              this.options.onParallelStatus?.(round, statuses)
-
-              const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
-              return { reviewer, fullResponse, inputText, failed: false as const }
-            } catch (err) {
-              const endTime = Date.now()
-              const startTime = statuses[index].startTime ?? endTime
-              statuses[index] = {
-                reviewerId: reviewer.id,
-                status: 'error',
-                startTime,
-                endTime,
-                duration: (endTime - startTime) / 1000
-              }
-              this.options.onParallelStatus?.(round, statuses)
-              logger.warn(`Reviewer ${reviewer.id} failed in round ${round}:`, err)
-              return { reviewer, fullResponse: '', inputText: '', failed: true as const, error: err }
-            }
+        const reviewerPromises = reviewerTasks.map(async ({ reviewer, messages }, index) => {
+          const startTime = Date.now()
+          updateLegacyStatus(index, {
+            status: 'thinking',
+            startTime,
+            lastActivityAt: startTime,
+            outputChars: 0,
+            chunkCount: 0,
+            stalledFor: undefined,
           })
-        )
+
+          try {
+            const fullResponse = await this.collectStream(
+              `reviewer:${reviewer.id}`,
+              'reviewer',
+              reviewer,
+              messages,
+              chunk => {
+                const current = legacyStatuses[index]
+                updateLegacyStatus(index, {
+                  status: 'streaming',
+                  lastActivityAt: Date.now(),
+                  outputChars: (current.outputChars ?? 0) + chunk.length,
+                  chunkCount: (current.chunkCount ?? 0) + 1,
+                  stalledFor: undefined,
+                })
+              }
+            )
+            const endTime = Date.now()
+            updateLegacyStatus(index, {
+              status: 'done',
+              endTime,
+              duration: (endTime - (legacyStatuses[index].startTime ?? endTime)) / 1000,
+              stalledFor: undefined,
+            })
+            const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
+            return { reviewer, fullResponse, inputText, failed: false as const }
+          } catch (err) {
+            const endTime = Date.now()
+            updateLegacyStatus(index, {
+              status: 'error',
+              endTime,
+              duration: (endTime - (legacyStatuses[index].startTime ?? endTime)) / 1000,
+            })
+            logger.warn(`Reviewer ${reviewer.id} failed in round ${round}:`, err)
+            return { reviewer, fullResponse: '', inputText: '', failed: true as const, error: err }
+          }
+        })
+
+        const legacyStallInterval = setInterval(markLegacyStalledReviewers, LEGACY_REVIEWER_STALL_CHECK_INTERVAL_MS)
+        let results: Awaited<(typeof reviewerPromises)[number]>[]
+        try {
+          results = await Promise.all(reviewerPromises)
+        } finally {
+          clearInterval(legacyStallInterval)
+        }
 
         // Fail only if ALL reviewers failed
         const successResults = results.filter(r => !r.failed)
@@ -848,7 +972,12 @@ Use reviewer IDs: ${reviewerIds}`
         }
 
         const messages: Message[] = [{ role: 'user', content: prompt }]
-        const response = await this.summarizer.provider.chat(messages, systemPrompt, chatOpts)
+        const response = await this.trackedPromise(
+          'structurizer',
+          'structurizer',
+          'extracting issues',
+          () => this.summarizer.provider.chat(messages, systemPrompt, chatOpts)
+        )
         this.trackTokens('summarizer', prompt, response)
 
         const parsed = parseReviewerOutput(response)
@@ -882,7 +1011,14 @@ Use reviewer IDs: ${reviewerIds}`
 ${conversationText}${this.langSuffix}`
 
     const messages: Message[] = [{ role: 'user', content: prompt }]
-    const response = await this.summarizer.provider.chat(messages, this.withLang(this.summarizer.systemPrompt))
+    const response = this.options.status
+      ? await this.collectStream(
+          'summarizer',
+          'summarizer',
+          this.summarizer,
+          messages
+        )
+      : await this.summarizer.provider.chat(messages, this.withLang(this.summarizer.systemPrompt))
     this.trackTokens('summarizer', prompt + (this.summarizer.systemPrompt || ''), response)
     return response
   }
@@ -925,7 +1061,12 @@ Then provide your **Verified Final Conclusion** that:
 
     const messages: Message[] = [{ role: 'user', content: prompt }]
     const systemPrompt = this.withLang('You are a meticulous code review verifier. Your job is to fact-check review conclusions against the actual code changes. Be precise and evidence-based — cite specific code when confirming or correcting claims.')
-    const response = await this.summarizer.provider.chat(messages, systemPrompt)
+    const response = await this.trackedPromise(
+      'verifier:conclusion',
+      'verifier',
+      'verifying conclusion',
+      () => this.summarizer.provider.chat(messages, systemPrompt)
+    )
     this.trackTokens('summarizer', prompt + (systemPrompt || ''), response)
     return response
   }
@@ -982,7 +1123,12 @@ ${issuesText}${this.langSuffix}`
     )
 
     try {
-      const response = await this.summarizer.provider.chat(messages, systemPrompt)
+      const response = await this.trackedPromise(
+        'verifier:issues',
+        'verifier',
+        'verifying issues',
+        () => this.summarizer.provider.chat(messages, systemPrompt)
+      )
       this.trackTokens('verifier', prompt + (systemPrompt || ''), response)
 
       // Parse the verification result

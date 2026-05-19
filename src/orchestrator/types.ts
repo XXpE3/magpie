@@ -1,6 +1,7 @@
 // src/orchestrator/types.ts
 import type { AIProvider } from '../providers/types.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
+import type { StatusTracker } from '../status/tracker.js'
 
 export interface Reviewer {
   id: string
@@ -35,10 +36,14 @@ export interface DebateResult {
 
 export interface ReviewerStatus {
   reviewerId: string
-  status: 'pending' | 'thinking' | 'done' | 'error'
-  startTime?: number  // timestamp ms
-  endTime?: number    // timestamp ms
-  duration?: number   // seconds
+  status: 'pending' | 'thinking' | 'streaming' | 'stalled' | 'done' | 'error'
+  startTime?: number      // timestamp ms
+  endTime?: number        // timestamp ms
+  duration?: number       // seconds
+  lastActivityAt?: number // timestamp ms of last stream activity
+  outputChars?: number    // cumulative streamed characters
+  chunkCount?: number     // observed stream chunks
+  stalledFor?: number     // seconds since last activity
 }
 
 export interface OrchestratorOptions {
@@ -55,6 +60,7 @@ export interface OrchestratorOptions {
   // Post-analysis Q&A: return { target: '@reviewer_id', question: 'text' } or null to continue
   onPostAnalysisQA?: () => Promise<{ target: string; question: string } | null>
   onContextGathered?: (context: GatheredContext) => void  // Context gathering complete callback
+  status?: StatusTracker  // Unified task status tracking
   interruptState?: { interrupted: boolean }  // External interrupt signal (e.g., Ctrl+C)
   skipConclusion?: boolean  // Skip getFinalConclusion + old verifyConclusion (bot mode)
 }

@@ -1,6 +1,6 @@
 // src/providers/mock.ts
 import { readFileSync } from 'fs'
-import type { AIProvider, Message } from './types.js'
+import type { AIProvider, Message, ChatStreamOptions } from './types.js'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -34,12 +34,13 @@ export class MockProvider implements AIProvider {
     return getResponse(messages)
   }
 
-  async *chatStream(messages: Message[], _systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  async *chatStream(messages: Message[], _systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const text = getResponse(messages)
     const delay = getDelay()
     const words = text.split(/(\s+)/)
 
     for (const word of words) {
+      options?.onActivity?.({ kind: 'output', label: 'text' })
       yield word
       if (word.trim()) {
         await sleep(delay)

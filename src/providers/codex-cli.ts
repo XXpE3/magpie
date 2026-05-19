@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, CliProviderOptions } from './types.js'
+import type { AIProvider, Message, CliProviderOptions, ChatStreamOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
@@ -51,12 +51,12 @@ export class CodexCliProvider implements AIProvider {
     }
   }
 
-  async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+  async *chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
       ? this.session.buildPromptLastOnly(messages)
       : this.session.buildPrompt(messages, systemPrompt)
     try {
-      yield* this.runCodexStream(prompt)
+      yield* this.runCodexStream(prompt, options)
       this.session.markMessageSent()
     } catch (err) {
       this.startSession(this.session.sessionName)
@@ -140,7 +140,7 @@ export class CodexCliProvider implements AIProvider {
     })
   }
 
-  private async *runCodexStream(prompt: string): AsyncGenerator<string, void, unknown> {
+  private async *runCodexStream(prompt: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
 
     const args = this.buildArgs()
@@ -175,6 +175,7 @@ export class CodexCliProvider implements AIProvider {
     }, 10000) : null  // Check every 10s
 
     const pushChunk = (chunk: string) => {
+      options?.onActivity?.({ kind: 'output', label: 'agent message' })
       if (resolveNext) {
         resolveNext({ chunk })
         resolveNext = null
@@ -185,6 +186,7 @@ export class CodexCliProvider implements AIProvider {
 
     child.stdout.on('data', (data) => {
       lastActivity = Date.now()
+      options?.onActivity?.({ kind: 'stdout' })
       lineBuf += data.toString()
 
       // Parse complete JSONL lines
@@ -196,6 +198,7 @@ export class CodexCliProvider implements AIProvider {
         if (!trimmed) continue
         try {
           const event = JSON.parse(trimmed)
+          options?.onActivity?.({ kind: 'tool', label: event.type })
           if (event.type === 'thread.started' && event.thread_id && this.sessionEnabled) {
             this.session.sessionId = event.thread_id
           } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item?.text) {
@@ -209,6 +212,7 @@ export class CodexCliProvider implements AIProvider {
 
     child.stderr.on('data', (data) => {
       lastActivity = Date.now()  // Activity on stderr also counts
+      options?.onActivity?.({ kind: 'stderr' })
       stderrOutput += data.toString()
     })
 
@@ -219,6 +223,7 @@ export class CodexCliProvider implements AIProvider {
       if (lineBuf.trim()) {
         try {
           const event = JSON.parse(lineBuf.trim())
+          options?.onActivity?.({ kind: 'tool', label: event.type })
           if (event.type === 'thread.started' && event.thread_id && this.sessionEnabled) {
             this.session.sessionId = event.thread_id
           } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item?.text) {

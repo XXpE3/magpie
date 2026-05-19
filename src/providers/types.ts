@@ -11,10 +11,21 @@ export interface ChatOptions {
   disableTools?: boolean
 }
 
+export type ProviderActivityKind = 'request' | 'stdout' | 'stderr' | 'tool' | 'output'
+
+export interface ProviderActivity {
+  kind: ProviderActivityKind
+  label?: string
+}
+
+export interface ChatStreamOptions extends ChatOptions {
+  onActivity?: (activity: ProviderActivity) => void
+}
+
 export interface AIProvider {
   name: string
   chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string>
-  chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown>
+  chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown>
   setCwd?(cwd: string): void
   // Session management for multi-turn conversations
   sessionId?: string
