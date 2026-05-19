@@ -1,0 +1,19 @@
+README.md
+  s_9ce16618ac07b7::t_cf335d5becf597 16-17,24,27-28,33,40-46,126-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.9",
+  "base_commit_sha": "3097c52a365691bd36e2e05b8ce2af145ee0425b",
+  "prompts": {},
+  "sessions": {
+    "s_9ce16618ac07b7": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019e3f5f-be1c-7b4a-9ed1-a20df6b2e9df",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Shima Rin <xxpe3@nav.moe>"
+    }
+  }
+}
