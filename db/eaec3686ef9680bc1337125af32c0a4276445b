@@ -1,0 +1,19 @@
+magpie-skills/SKILL.md
+  s_4398d527216f0a::t_c5d736a7e5157f 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.9",
+  "base_commit_sha": "dbeaec3686ef9680bc1337125af32c0a4276445b",
+  "prompts": {},
+  "sessions": {
+    "s_4398d527216f0a": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019e40c5-587c-7844-8f25-fc2ca5acd9ab",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Shima Rin <xxpe3@nav.moe>"
+    }
+  }
+}
