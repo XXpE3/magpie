@@ -13,37 +13,37 @@ Multi-AI adversarial code review tool. Multiple AI models independently review y
 
 ## Supported AI Providers
 
+Magpie does not limit API reviewers to a fixed list of provider names. In config, `providers` keys are arbitrary IDs such as `deepseek`, `moonshot`, `openrouter`, or `local-vllm`. Any configured API provider without an explicit `type` is treated as OpenAI-compatible, so any OpenAI-compatible endpoint and model can be used.
+
 | Provider | Type | Description |
 |----------|------|-------------|
 | `claude-code` | CLI | Claude Code CLI (uses your subscription, no API key) |
 | `codex-cli` | CLI | OpenAI Codex CLI (uses your subscription, no API key) |
 | `gemini-cli` | CLI | Gemini CLI (uses Google account login, no API key) |
 | `qwen-code` | CLI | Alibaba Qwen Code CLI (uses OAuth login, no API key) |
-| `anthropic` | API | Anthropic API (requires ANTHROPIC_API_KEY) |
-| `openai` | API | OpenAI API (requires OPENAI_API_KEY) |
-| `google` | API | Google Gemini API (requires GOOGLE_API_KEY) |
-| `minimax` | API | MiniMax API (requires MINIMAX_API_KEY) |
-| `ollama` | API | Ollama OpenAI-compatible API (defaults to local Ollama) |
+| Custom provider ID | API | Any OpenAI-compatible API; configure `api_key`, `base_url`, and any model name |
 | `mock` | Debug | Mock provider for testing (no API key, see [Debug Mode](#debug-mode)) |
+
+Optional native API `type` values are still available for provider-specific integrations: `anthropic`, `google`, `minimax`, `ollama`, and `openai`.
 
 **Recommended**: Use CLI providers (claude-code, codex-cli, gemini-cli, qwen-code) - they're free with your subscriptions and don't require API keys.
 
 ### Custom API Endpoints
 
-All API providers support custom `base_url` for connecting to compatible third-party services (Azure OpenAI, Ollama, vLLM, one-api, etc.). Set `provider` on each reviewer, analyzer, summarizer, or context gatherer to choose a configured provider explicitly:
+Set `provider` on each reviewer, analyzer, summarizer, or context gatherer to choose a configured provider explicitly:
 
 ```yaml
 providers:
   deepseek:
-    type: openai
     api_key: ${DEEPSEEK_API_KEY}
     base_url: https://api.deepseek.com/v1
-  openai:
-    api_key: ${OPENAI_API_KEY}
-    base_url: https://my-openai-proxy.example.com/v1
-  anthropic:
-    api_key: ${ANTHROPIC_API_KEY}
-    base_url: https://my-proxy.example.com
+  moonshot:
+    api_key: ${MOONSHOT_API_KEY}
+    base_url: https://api.moonshot.cn/v1
+  openrouter:
+    type: openai  # optional; custom providers default to OpenAI-compatible
+    api_key: ${OPENROUTER_API_KEY}
+    base_url: https://openrouter.ai/api/v1
 
 reviewers:
   deepseek:
@@ -123,9 +123,9 @@ Config file is located at `~/.magpie/config.yaml`:
 ```yaml
 # AI Providers
 providers:
-  minimax:
-    api_key: your-minimax-api-key   # or set MINIMAX_API_KEY env var
-    base_url: https://custom-endpoint.example.com/v1  # optional: custom API endpoint
+  deepseek:
+    api_key: ${DEEPSEEK_API_KEY}
+    base_url: https://api.deepseek.com/v1
 
 # Default settings
 defaults:
