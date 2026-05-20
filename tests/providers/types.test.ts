@@ -1,5 +1,6 @@
 // tests/providers/types.test.ts
 import { describe, it, expect } from 'vitest'
+import { notifyProviderActivity } from '../../src/providers/types'
 import type { AIProvider, Message, ProviderOptions } from '../../src/providers/types'
 
 describe('Provider Types', () => {
@@ -18,5 +19,11 @@ describe('Provider Types', () => {
       chatStream: async function* () { yield 'chunk' }
     }
     expect(mockProvider.name).toBe('test')
+  })
+
+  it('should isolate activity callback failures', () => {
+    expect(() => notifyProviderActivity({
+      onActivity: () => { throw new Error('observer failed') }
+    }, { kind: 'stdout' })).not.toThrow()
   })
 })

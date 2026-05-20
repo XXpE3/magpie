@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import type { AIProvider, Message, ProviderOptions, ChatStreamOptions } from './types.js'
+import { notifyProviderActivity } from './types.js'
 import { withRetry } from '../utils/retry.js'
 
 export class GeminiProvider implements AIProvider {
@@ -54,7 +55,7 @@ export class GeminiProvider implements AIProvider {
     for await (const chunk of result.stream) {
       const text = chunk.text()
       if (text) {
-        options?.onActivity?.({ kind: 'output', label: 'text' })
+        notifyProviderActivity(options, { kind: 'output', label: 'text' })
         yield text
       }
     }

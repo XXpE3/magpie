@@ -1,5 +1,6 @@
 import { spawn } from 'child_process'
 import type { AIProvider, Message, CliProviderOptions, ChatStreamOptions } from './types.js'
+import { notifyProviderActivity } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
@@ -166,7 +167,7 @@ export class GeminiCliProvider implements AIProvider {
     }, 10000) : null  // Check every 10s
 
     const pushChunk = (chunk: string) => {
-      options?.onActivity?.({ kind: 'output', label: 'assistant message' })
+      notifyProviderActivity(options, { kind: 'output', label: 'assistant message' })
       if (resolveNext) {
         resolveNext({ chunk })
         resolveNext = null
@@ -177,7 +178,7 @@ export class GeminiCliProvider implements AIProvider {
 
     child.stdout.on('data', (data) => {
       lastActivity = Date.now()
-      options?.onActivity?.({ kind: 'stdout' })
+      notifyProviderActivity(options, { kind: 'stdout' })
       lineBuf += data.toString()
 
       // Parse complete NDJSON lines
@@ -189,7 +190,7 @@ export class GeminiCliProvider implements AIProvider {
         if (!trimmed) continue
         try {
           const event = JSON.parse(trimmed)
-          options?.onActivity?.({ kind: 'tool', label: event.type })
+          notifyProviderActivity(options, { kind: 'tool', label: event.type })
           if (event.type === 'init' && event.session_id && this.sessionEnabled) {
             this.session.sessionId = event.session_id
           } else if (event.type === 'message' && event.role === 'assistant' && event.content) {
@@ -203,7 +204,7 @@ export class GeminiCliProvider implements AIProvider {
 
     child.stderr.on('data', (data) => {
       lastActivity = Date.now()  // Activity on stderr also counts
-      options?.onActivity?.({ kind: 'stderr' })
+      notifyProviderActivity(options, { kind: 'stderr' })
       stderrBuf += data.toString()
       if (stderrBuf.length > 10000) stderrBuf = stderrBuf.slice(-10000)
     })
@@ -215,7 +216,7 @@ export class GeminiCliProvider implements AIProvider {
       if (lineBuf.trim()) {
         try {
           const event = JSON.parse(lineBuf.trim())
-          options?.onActivity?.({ kind: 'tool', label: event.type })
+          notifyProviderActivity(options, { kind: 'tool', label: event.type })
           if (event.type === 'init' && event.session_id && this.sessionEnabled) {
             this.session.sessionId = event.session_id
           } else if (event.type === 'message' && event.role === 'assistant' && event.content) {

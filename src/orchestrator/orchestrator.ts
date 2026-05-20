@@ -1,5 +1,5 @@
 // src/orchestrator/orchestrator.ts
-import type { Message } from '../providers/types.js'
+import type { Message, ProviderActivity } from '../providers/types.js'
 import type { TaskPhase } from '../status/types.js'
 import type {
   Reviewer,
@@ -18,6 +18,7 @@ import { logger } from '../utils/logger.js'
 
 const LEGACY_REVIEWER_STALL_THRESHOLD_MS = 60_000
 const LEGACY_REVIEWER_STALL_CHECK_INTERVAL_MS = 1_000
+const LEGACY_STATUS_RENDER_THROTTLE_MS = 100
 
 export class InterruptedError extends Error {
   constructor() { super('Interrupted by user') }
@@ -154,7 +155,8 @@ export class DebateOrchestrator {
     phase: TaskPhase,
     reviewer: Reviewer,
     messages: Message[],
-    onChunk?: (chunk: string) => void
+    onChunk?: (chunk: string) => void,
+    onActivity?: (activity: ProviderActivity) => void
   ): Promise<string> {
     this.options.status?.begin(taskId, phase, reviewer.id)
     let fullResponse = ''
@@ -166,6 +168,7 @@ export class DebateOrchestrator {
         {
           onActivity: activity => {
             this.options.status?.activity(taskId, activity.label ?? activity.kind)
+            onActivity?.(activity)
           },
         }
       )) {
@@ -541,10 +544,39 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
           outputChars: 0,
           chunkCount: 0,
         }))
-        const emitLegacyStatus = () => this.options.onParallelStatus?.(round, legacyStatuses)
-        const updateLegacyStatus = (index: number, next: Partial<ReviewerStatus>) => {
+        let legacyStatusTimer: ReturnType<typeof setTimeout> | null = null
+        let lastLegacyStatusEmitAt = 0
+        const clearLegacyStatusTimer = () => {
+          if (!legacyStatusTimer) return
+          clearTimeout(legacyStatusTimer)
+          legacyStatusTimer = null
+        }
+        const emitLegacyStatusNow = () => {
+          if (!this.options.onParallelStatus) return
+          clearLegacyStatusTimer()
+          lastLegacyStatusEmitAt = Date.now()
+          try {
+            this.options.onParallelStatus(round, legacyStatuses)
+          } catch {
+            // Legacy status callbacks are observational; they must not break review execution.
+          }
+        }
+        const emitLegacyStatusSoon = () => {
+          if (!this.options.onParallelStatus || legacyStatusTimer) return
+          const elapsed = Date.now() - lastLegacyStatusEmitAt
+          const delay = Math.max(0, LEGACY_STATUS_RENDER_THROTTLE_MS - elapsed)
+          legacyStatusTimer = setTimeout(() => {
+            legacyStatusTimer = null
+            emitLegacyStatusNow()
+          }, delay)
+        }
+        const updateLegacyStatus = (index: number, next: Partial<ReviewerStatus>, immediate = false) => {
           legacyStatuses[index] = { ...legacyStatuses[index], ...next }
-          emitLegacyStatus()
+          if (immediate) {
+            emitLegacyStatusNow()
+          } else {
+            emitLegacyStatusSoon()
+          }
         }
         const markLegacyStalledReviewers = () => {
           if (!this.options.onParallelStatus) return
@@ -567,9 +599,9 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
             }
           }
 
-          if (changed) emitLegacyStatus()
+          if (changed) emitLegacyStatusNow()
         }
-        emitLegacyStatus()
+        emitLegacyStatusNow()
 
         const reviewerPromises = reviewerTasks.map(async ({ reviewer, messages }, index) => {
           const startTime = Date.now()
@@ -580,7 +612,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
             outputChars: 0,
             chunkCount: 0,
             stalledFor: undefined,
-          })
+          }, true)
 
           try {
             const fullResponse = await this.collectStream(
@@ -597,6 +629,14 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
                   chunkCount: (current.chunkCount ?? 0) + 1,
                   stalledFor: undefined,
                 })
+              },
+              () => {
+                const current = legacyStatuses[index]
+                updateLegacyStatus(index, {
+                  status: (current.chunkCount ?? 0) > 0 ? 'streaming' : 'thinking',
+                  lastActivityAt: Date.now(),
+                  stalledFor: undefined,
+                })
               }
             )
             const endTime = Date.now()
@@ -605,7 +645,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
               endTime,
               duration: (endTime - (legacyStatuses[index].startTime ?? endTime)) / 1000,
               stalledFor: undefined,
-            })
+            }, true)
             const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
             return { reviewer, fullResponse, inputText, failed: false as const }
           } catch (err) {
@@ -614,7 +654,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
               status: 'error',
               endTime,
               duration: (endTime - (legacyStatuses[index].startTime ?? endTime)) / 1000,
-            })
+            }, true)
             logger.warn(`Reviewer ${reviewer.id} failed in round ${round}:`, err)
             return { reviewer, fullResponse: '', inputText: '', failed: true as const, error: err }
           }
@@ -626,6 +666,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
           results = await Promise.all(reviewerPromises)
         } finally {
           clearInterval(legacyStallInterval)
+          clearLegacyStatusTimer()
         }
 
         // Fail only if ALL reviewers failed

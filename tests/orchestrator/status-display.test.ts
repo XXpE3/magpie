@@ -24,6 +24,23 @@ function makeStreamProvider(name: string, chunks: string[], delayMs = 0): AIProv
   }
 }
 
+function makeActivityThenChunkProvider(name: string, activityDelays: number[], finalDelayMs: number, chunk: string): AIProvider {
+  return {
+    name,
+    async chat() { return '```json\n{"issues":[]}\n```' },
+    async *chatStream(_messages, _systemPrompt, options) {
+      for (const delay of activityDelays) {
+        await new Promise(resolve => setTimeout(resolve, delay))
+        options?.onActivity?.({ kind: 'stdout' })
+      }
+      if (finalDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, finalDelayMs))
+      }
+      yield chunk
+    }
+  }
+}
+
 function snapshotStatus(snapshots: TaskStatus[][]): (snapshot: TaskStatus[]) => void {
   return snapshot => snapshots.push(snapshot.map(task => ({ ...task })))
 }
@@ -130,6 +147,74 @@ describe('DebateOrchestrator streaming task status', () => {
     expect(snapshots.at(-1)?.map(status => status.status)).toEqual(['done', 'done'])
   })
 
+  it('isolates legacy onParallelStatus callback failures', async () => {
+    const reviewer = makeReviewer('reviewer', makeStreamProvider('reviewer', ['review']))
+    const summarizer = makeReviewer('summarizer', makeStreamProvider('summarizer', ['summary']))
+    const analyzer = makeReviewer('analyzer', makeStreamProvider('analyzer', ['analysis']))
+
+    const orchestrator = new DebateOrchestrator([reviewer], summarizer, analyzer, {
+      maxRounds: 1,
+      interactive: false,
+      checkConvergence: false,
+      skipConclusion: true,
+      onParallelStatus: () => { throw new Error('observer failed') }
+    })
+
+    await expect(orchestrator.runStreaming('test', 'Review this code')).resolves.toBeDefined()
+  })
+
+  it('throttles legacy onParallelStatus updates during high-volume streaming', async () => {
+    let statusCalls = 0
+    const chunks = Array.from({ length: 100 }, () => 'x')
+    const reviewer = makeReviewer('reviewer', makeStreamProvider('reviewer', chunks))
+    const summarizer = makeReviewer('summarizer', makeStreamProvider('summarizer', ['summary']))
+    const analyzer = makeReviewer('analyzer', makeStreamProvider('analyzer', ['analysis']))
+
+    const orchestrator = new DebateOrchestrator([reviewer], summarizer, analyzer, {
+      maxRounds: 1,
+      interactive: false,
+      checkConvergence: false,
+      skipConclusion: true,
+      onParallelStatus: () => { statusCalls++ }
+    })
+
+    await orchestrator.runStreaming('test', 'Review this code')
+
+    expect(statusCalls).toBeGreaterThan(0)
+    expect(statusCalls).toBeLessThan(20)
+  })
+
+  it('keeps legacy reviewers active when providers report activity before text chunks', async () => {
+    vi.useFakeTimers()
+
+    const snapshots: ReviewerStatus[][] = []
+    const reviewer = makeReviewer('cli-reviewer', makeActivityThenChunkProvider('cli', [20_000, 20_000, 20_000], 5_000, 'done'))
+    const summarizer = makeReviewer('summarizer', makeStreamProvider('summarizer', ['summary']))
+    const analyzer = makeReviewer('analyzer', makeStreamProvider('analyzer', ['analysis']))
+
+    const orchestrator = new DebateOrchestrator([reviewer], summarizer, analyzer, {
+      maxRounds: 1,
+      interactive: false,
+      checkConvergence: false,
+      skipConclusion: true,
+      onParallelStatus: (_round, statuses) => snapshots.push(statuses.map(status => ({ ...status })))
+    })
+
+    const runPromise = orchestrator.runStreaming('test', 'Review this code')
+
+    await vi.advanceTimersByTimeAsync(61_000)
+    const reviewerSnapshots = snapshots
+      .map(snapshot => snapshot.find(status => status.reviewerId === 'cli-reviewer'))
+      .filter((status): status is ReviewerStatus => Boolean(status))
+
+    expect(reviewerSnapshots.length).toBeGreaterThan(0)
+    expect(reviewerSnapshots.some(status => status.status === 'stalled')).toBe(false)
+    expect(reviewerSnapshots.at(-1)?.lastActivityAt).toBeGreaterThanOrEqual(Date.now() - 1_000)
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    await runPromise
+  })
+
   it('preserves final conclusion result and summarizer token usage with status tracking', async () => {
     const snapshots: TaskStatus[][] = []
     const status = new StatusTracker(snapshotStatus(snapshots))
@@ -176,6 +261,46 @@ describe('DebateOrchestrator streaming task status', () => {
 
     await vi.advanceTimersByTimeAsync(2_000)
     await runPromise
+    status.stop()
+  })
+
+  it('refreshes active task snapshots on timer ticks even when state does not change', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+
+    const snapshots: TaskStatus[][] = []
+    const status = new StatusTracker(snapshotStatus(snapshots))
+    status.start()
+    status.begin('task', 'reviewer', 'reviewer')
+
+    const afterBegin = snapshots.length
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    expect(snapshots.length).toBeGreaterThan(afterBegin)
+    status.stop()
+  })
+
+  it('throttles repeated output snapshots without dropping terminal updates', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+
+    const snapshots: TaskStatus[][] = []
+    const status = new StatusTracker(snapshotStatus(snapshots), { renderThrottleMs: 100 })
+    status.begin('task', 'reviewer', 'reviewer')
+    status.output('task', 'a')
+
+    const afterFirstOutput = snapshots.length
+    status.output('task', 'b')
+    status.output('task', 'c')
+    expect(snapshots.length).toBe(afterFirstOutput)
+
+    await vi.advanceTimersByTimeAsync(100)
+    expect(snapshots.length).toBeGreaterThan(afterFirstOutput)
+
+    const beforeDone = snapshots.length
+    status.done('task')
+    expect(snapshots.length).toBe(beforeDone + 1)
+    expect(snapshots.at(-1)?.find(task => task.id === 'task')?.state).toBe('done')
     status.stop()
   })
 })

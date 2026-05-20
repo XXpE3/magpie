@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { AIProvider, Message, ProviderOptions, ChatStreamOptions } from './types.js'
+import { notifyProviderActivity } from './types.js'
 import { withRetry } from '../utils/retry.js'
 
 export class AnthropicProvider implements AIProvider {
@@ -43,7 +44,7 @@ export class AnthropicProvider implements AIProvider {
     try {
       for await (const event of stream) {
         if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          options?.onActivity?.({ kind: 'output', label: 'text' })
+          notifyProviderActivity(options, { kind: 'output', label: 'text' })
           yield event.delta.text
         }
       }

@@ -1,5 +1,6 @@
 import OpenAI from 'openai'
 import type { AIProvider, Message, ProviderOptions, ChatStreamOptions } from './types.js'
+import { notifyProviderActivity } from './types.js'
 import { withRetry } from '../utils/retry.js'
 
 export class OpenAIProvider implements AIProvider {
@@ -57,7 +58,7 @@ export class OpenAIProvider implements AIProvider {
       for await (const chunk of stream) {
         const content = chunk.choices[0]?.delta?.content
         if (content) {
-          options?.onActivity?.({ kind: 'output', label: 'text' })
+          notifyProviderActivity(options, { kind: 'output', label: 'text' })
           yield content
         }
       }

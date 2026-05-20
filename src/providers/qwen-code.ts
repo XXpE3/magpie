@@ -1,5 +1,6 @@
 import { spawn } from 'child_process'
 import type { AIProvider, Message, CliProviderOptions, ChatOptions, ChatStreamOptions } from './types.js'
+import { notifyProviderActivity } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { logger } from '../utils/logger.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
@@ -148,9 +149,9 @@ export class QwenCodeProvider implements AIProvider {
 
     child.stdout.on('data', (data) => {
       lastActivity = Date.now()
-      options?.onActivity?.({ kind: 'stdout' })
+      notifyProviderActivity(options, { kind: 'stdout' })
       const chunk = data.toString()
-      options?.onActivity?.({ kind: 'output', label: 'text' })
+      notifyProviderActivity(options, { kind: 'output', label: 'text' })
       if (resolveNext) {
         resolveNext({ chunk })
         resolveNext = null
@@ -161,7 +162,7 @@ export class QwenCodeProvider implements AIProvider {
 
     child.stderr.on('data', (_data) => {
       lastActivity = Date.now()  // Activity on stderr also counts
-      options?.onActivity?.({ kind: 'stderr' })
+      notifyProviderActivity(options, { kind: 'stderr' })
     })
 
     child.on('close', (code) => {

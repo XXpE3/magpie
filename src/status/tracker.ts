@@ -3,13 +3,17 @@ import type { TaskPhase, TaskState, TaskStatus } from './types.js'
 export interface StatusTrackerOptions {
   quietMs?: number
   stalledMs?: number
+  renderThrottleMs?: number
 }
 
 export class StatusTracker {
   private tasks = new Map<string, TaskStatus>()
   private timer: ReturnType<typeof setInterval> | null = null
+  private pendingEmitTimer: ReturnType<typeof setTimeout> | null = null
   private quietMs: number
   private stalledMs: number
+  private renderThrottleMs: number
+  private lastEmitAt = 0
 
   constructor(
     private readonly onChange: (snapshot: TaskStatus[]) => void,
@@ -17,6 +21,7 @@ export class StatusTracker {
   ) {
     this.quietMs = options.quietMs ?? 30_000
     this.stalledMs = options.stalledMs ?? 60_000
+    this.renderThrottleMs = options.renderThrottleMs ?? 100
   }
 
   start(): void {
@@ -25,9 +30,14 @@ export class StatusTracker {
   }
 
   stop(): void {
-    if (!this.timer) return
-    clearInterval(this.timer)
-    this.timer = null
+    if (this.timer) {
+      clearInterval(this.timer)
+      this.timer = null
+    }
+    if (this.pendingEmitTimer) {
+      clearTimeout(this.pendingEmitTimer)
+      this.pendingEmitTimer = null
+    }
   }
 
   begin(id: string, phase: TaskPhase, label = id): void {
@@ -42,7 +52,7 @@ export class StatusTracker {
       outputChars: 0,
       chunkCount: 0,
     })
-    this.emit()
+    this.emitNow()
   }
 
   pending(id: string, phase: TaskPhase, label = id): void {
@@ -55,7 +65,7 @@ export class StatusTracker {
       outputChars: 0,
       chunkCount: 0,
     })
-    this.emit()
+    this.emitNow()
   }
 
   pendingMany(tasks: Array<{ id: string; phase: TaskPhase; label?: string }>): void {
@@ -72,20 +82,25 @@ export class StatusTracker {
       })
       changed = true
     }
-    if (changed) this.emit()
+    if (changed) this.emitNow()
   }
 
   activity(id: string, label?: string): void {
     const task = this.tasks.get(id)
     if (!task || isTerminal(task.state)) return
 
+    const nextState = task.outputChars > 0 ? 'streaming' : 'working'
     this.tasks.set(id, {
       ...task,
-      state: task.outputChars > 0 ? 'streaming' : 'working',
+      state: nextState,
       lastActivityAt: Date.now(),
       activityLabel: label,
     })
-    this.emit()
+    if (task.state !== nextState) {
+      this.emitNow()
+    } else {
+      this.emitSoon()
+    }
   }
 
   output(id: string, chunk: string): void {
@@ -102,7 +117,11 @@ export class StatusTracker {
       chunkCount: task.chunkCount + 1,
       activityLabel: 'text output',
     })
-    this.emit()
+    if (task.state !== 'streaming') {
+      this.emitNow()
+    } else {
+      this.emitSoon()
+    }
   }
 
   done(id: string): void {
@@ -133,18 +152,19 @@ export class StatusTracker {
       endedAt: Date.now(),
       error,
     })
-    this.emit()
+    this.emitNow()
   }
 
   private tick(): void {
     const now = Date.now()
-    let changed = false
+    let hasActiveTask = false
 
     for (const [id, task] of this.tasks) {
       if (isTerminal(task.state)) continue
 
       const last = task.lastActivityAt ?? task.startedAt
       if (!last) continue
+      hasActiveTask = true
 
       const idleMs = now - last
       let nextState: TaskState | null = null
@@ -157,14 +177,29 @@ export class StatusTracker {
 
       if (nextState && task.state !== nextState) {
         this.tasks.set(id, { ...task, state: nextState })
-        changed = true
       }
     }
 
-    if (changed) this.emit()
+    if (hasActiveTask) this.emitNow()
   }
 
-  private emit(): void {
+  private emitSoon(): void {
+    if (this.pendingEmitTimer) return
+
+    const elapsed = Date.now() - this.lastEmitAt
+    const delay = Math.max(0, this.renderThrottleMs - elapsed)
+    this.pendingEmitTimer = setTimeout(() => {
+      this.pendingEmitTimer = null
+      this.emitNow()
+    }, delay)
+  }
+
+  private emitNow(): void {
+    if (this.pendingEmitTimer) {
+      clearTimeout(this.pendingEmitTimer)
+      this.pendingEmitTimer = null
+    }
+    this.lastEmitAt = Date.now()
     this.onChange(this.snapshot())
   }
 }

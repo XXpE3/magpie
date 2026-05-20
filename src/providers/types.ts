@@ -22,6 +22,14 @@ export interface ChatStreamOptions extends ChatOptions {
   onActivity?: (activity: ProviderActivity) => void
 }
 
+export function notifyProviderActivity(options: ChatStreamOptions | undefined, activity: ProviderActivity): void {
+  try {
+    options?.onActivity?.(activity)
+  } catch {
+    // Activity callbacks are observational; they must not break provider streams.
+  }
+}
+
 export interface AIProvider {
   name: string
   chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string>
