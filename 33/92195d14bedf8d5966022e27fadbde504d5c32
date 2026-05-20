@@ -1,0 +1,21 @@
+package.json
+  s_07a96b0ee1e56a::t_8f0cb71b8b8dbd 3
+src/cli.ts
+  s_07a96b0ee1e56a::t_926a6a29206fc8 3,9-11,17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "3392195d14bedf8d5966022e27fadbde504d5c32",
+  "prompts": {},
+  "sessions": {
+    "s_07a96b0ee1e56a": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019e4304-4219-75ac-a1c8-91f6f1372767",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Shima Rin <xxpe3@nav.moe>"
+    }
+  }
+}
