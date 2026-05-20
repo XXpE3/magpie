@@ -1,0 +1,56 @@
+tests/orchestrator/status-display.test.ts
+  s_98b6f21f97bf81::t_4a23fd7f0fd366 27-43,187-215
+  s_98b6f21f97bf81::t_076ab394481029 266-305
+  s_cabc0889732299::t_03cb18be6f42f9 150-186
+src/providers/claude-code.ts
+  s_98b6f21f97bf81::t_893499bd9bd480 3,193,205,208,225
+src/providers/minimax.ts
+  s_98b6f21f97bf81::t_56295964d3639a 2,124,126
+src/orchestrator/orchestrator.ts
+  s_cabc0889732299::t_7e6a881613191e 21,547-573,575-579,602,604,615,648,657,669
+  s_98b6f21f97bf81::t_1ef340c8dcb631 2,158-159,171,632-637
+src/status/tracker.ts
+  s_98b6f21f97bf81::t_cbcaa2b629b6ea 6,12,15-16,24,33-40,55,68,85,92,95,99-103,120-124,155,160,167,183,186-202
+tests/providers/types.test.ts
+  s_98b6f21f97bf81::t_069ac59616574e 3,23-27
+src/providers/openai.ts
+  s_98b6f21f97bf81::t_294062bfda0ab5 3,61
+src/providers/types.ts
+  s_98b6f21f97bf81::t_8fb7ad05186cb7 25-32
+src/providers/anthropic.ts
+  s_98b6f21f97bf81::t_3ce12ad564cdee 3,47
+src/providers/codex-cli.ts
+  s_98b6f21f97bf81::t_0bbf9cd55d7a43 3,179,190,202,216,227
+src/providers/qwen-code.ts
+  s_98b6f21f97bf81::t_e8ffefd3f1a413 3,152,154,165
+src/providers/mock.ts
+  s_98b6f21f97bf81::t_9cb71b57dcd54a 4,44
+src/providers/gemini-cli.ts
+  s_98b6f21f97bf81::t_0dd03dff11e863 3,170,181,193,207,219
+src/providers/gemini.ts
+  s_98b6f21f97bf81::t_c661a0aa921d1c 3,58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.9",
+  "base_commit_sha": "e98d7c629751c9b799b35e0585b2b255ab680165",
+  "prompts": {},
+  "sessions": {
+    "s_98b6f21f97bf81": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019e40e4-c2ac-7c14-991a-f5ef79cea7bd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Shima Rin <xxpe3@nav.moe>"
+    },
+    "s_cabc0889732299": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019e42ba-c283-79a1-89fd-32cf31c4b90c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Shima Rin <xxpe3@nav.moe>"
+    }
+  }
+}
