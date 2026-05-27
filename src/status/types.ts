@@ -8,6 +8,7 @@ export type TaskState =
   | 'done'
   | 'error'
   | 'timeout'
+  | 'cancelled'
 
 export type TaskPhase =
   | 'context'

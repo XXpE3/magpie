@@ -6,7 +6,7 @@ import { loadConfig } from '../config/loader.js'
 import { createProvider, isCliModel } from '../providers/factory.js'
 import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
 import type { DebateResult, Reviewer, ReviewerStatus } from '../orchestrator/types.js'
-import { createInterface } from 'readline'
+import { createInterface, emitKeypressEvents } from 'readline'
 import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
 import { ContextGatherer } from '../context-gatherer/index.js'
@@ -14,6 +14,7 @@ import type { ReviewTarget, ReviewerSessionState } from './review/types.js'
 import { fixMarkdown, getRandomJoke, formatMarkdown } from './review/utils.js'
 import { selectReviewers, interactiveFollowUpQA, interactiveCommentReview, interactivePostReviewDiscussion, interactiveGeneralDiscussion } from './review/interactive.js'
 import { handleRepoReview } from './review/repo-review.js'
+import { canForceProceed, formatParallelStatus, isPlainForceProceedKey } from './review/parallel-status.js'
 import { handleListSessions, handleResumeSession, handleExportSession } from './review/session-cmds.js'
 import { filterDiff } from '../utils/diff-filter.js'
 import { fetchLargePRDiff } from '../utils/large-diff.js'
@@ -76,6 +77,7 @@ export const reviewCommand = new Command('review')
       console.error(chalk.yellow('\n⚠ Ctrl+C received. Finishing current step... (press again to force exit)'))
     }
     process.on('SIGINT', sigintHandler)
+    let disableForceProceedShortcut: () => void = () => {}
 
     try {
       // Load config first (needed for --repo handling)
@@ -430,6 +432,45 @@ export const reviewCommand = new Command('review')
         parallelStatuses: null
       }
 
+      let parallelControl: { forceProceed(): void } | null = null
+      let forceProceedListenerAttached = false
+      let previousRawMode: boolean | undefined
+      const onForceProceedKey = (input: string, key?: { name?: string; ctrl?: boolean; meta?: boolean }) => {
+        if (key?.ctrl && key.name === 'c') {
+          sigintHandler()
+          return
+        }
+        if (!parallelControl || !isPlainForceProceedKey(input, key) || !canForceProceed(spinnerRef.parallelStatuses)) return
+        const control = parallelControl
+        disableForceProceedShortcut()
+        if (spinnerRef.spinner) {
+          spinnerRef.spinner.text = chalk.yellow('Force proceeding with completed reviewer results...')
+        }
+        control.forceProceed()
+      }
+      disableForceProceedShortcut = () => {
+        parallelControl = null
+        if (!forceProceedListenerAttached) return
+        forceProceedListenerAttached = false
+        process.stdin.off('keypress', onForceProceedKey)
+        if (process.stdin.isTTY && process.stdin.setRawMode && previousRawMode !== undefined) {
+          process.stdin.setRawMode(previousRawMode)
+        }
+        previousRawMode = undefined
+      }
+      const enableForceProceedShortcut = (control: { forceProceed(): void }) => {
+        parallelControl = control
+        if (!process.stdin.isTTY || forceProceedListenerAttached) return
+        emitKeypressEvents(process.stdin, rl ?? undefined)
+        process.stdin.on('keypress', onForceProceedKey)
+        forceProceedListenerAttached = true
+        previousRawMode = process.stdin.isRaw
+        if (process.stdin.setRawMode) {
+          process.stdin.setRawMode(true)
+        }
+        if (process.stdin.isPaused?.()) process.stdin.resume()
+      }
+
       const statusRenderer = new StatusRenderer()
       const status = new StatusTracker(snapshot => statusRenderer.render(snapshot), {
         quietMs: 30_000,
@@ -437,31 +478,7 @@ export const reviewCommand = new Command('review')
       })
       status.start()
 
-      // Format parallel status display
       const formatChars = (chars = 0): string => chars >= 1000 ? `${(chars / 1000).toFixed(1)}k` : `${chars}`
-      const elapsedSeconds = (reviewerStatus: ReviewerStatus): number => {
-        if (reviewerStatus.duration !== undefined) return reviewerStatus.duration
-        if (!reviewerStatus.startTime) return 0
-        return (Date.now() - reviewerStatus.startTime) / 1000
-      }
-      const formatParallelStatus = (round: number, statuses: ReviewerStatus[]): string => {
-        const statusParts = statuses.map(s => {
-          if (s.status === 'done') {
-            return chalk.green(`${s.reviewerId}:✓${elapsedSeconds(s).toFixed(1)}s`)
-          } else if (s.status === 'error') {
-            return chalk.red(`${s.reviewerId}:✗${elapsedSeconds(s).toFixed(1)}s`)
-          } else if (s.status === 'stalled') {
-            return chalk.yellow(`${s.reviewerId}:⚠${s.stalledFor ?? Math.floor(elapsedSeconds(s))}s`)
-          } else if (s.status === 'streaming') {
-            return chalk.cyan(`${s.reviewerId}:▸${formatChars(s.outputChars)}c`)
-          } else if (s.status === 'thinking') {
-            return chalk.yellow(`${s.reviewerId}:…${Math.floor(elapsedSeconds(s))}s`)
-          } else {
-            return chalk.dim(`${s.reviewerId}:○`)
-          }
-        })
-        return `Round ${round}/${maxRounds}: parallel review [${statusParts.join(' ')}]`
-      }
 
       const printMessageHeader = (reviewerId: string) => {
         if (reviewerId === 'analyzer') {
@@ -527,7 +544,7 @@ export const reviewCommand = new Command('review')
             if (spinnerRef.spinner) {
               if (spinnerRef.parallelStatuses && isParallelRound) {
                 const round = parseInt(reviewerId.split('-')[1])
-                spinnerRef.spinner.text = formatParallelStatus(round, spinnerRef.parallelStatuses)
+                spinnerRef.spinner.text = formatParallelStatus(round, maxRounds, spinnerRef.parallelStatuses, Boolean(parallelControl))
               } else if (activeStream) {
                 const elapsed = (Date.now() - activeStream.startTime) / 1000
                 const statusLine = activeStream.chunkCount > 0
@@ -553,7 +570,17 @@ export const reviewCommand = new Command('review')
           spinnerRef.parallelStatuses = statuses
           // Immediately update spinner to show every reviewer; skip jokes here to keep all statuses visible.
           if (spinnerRef.spinner) {
-            spinnerRef.spinner.text = formatParallelStatus(round, statuses)
+            spinnerRef.spinner.text = formatParallelStatus(round, maxRounds, statuses, Boolean(parallelControl))
+          }
+        },
+        onParallelRoundControl: (control) => {
+          if (control) {
+            enableForceProceedShortcut(control)
+            if (spinnerRef.spinner && spinnerRef.parallelStatuses) {
+              spinnerRef.spinner.text = formatParallelStatus(control.round, maxRounds, spinnerRef.parallelStatuses, Boolean(parallelControl))
+            }
+          } else {
+            disableForceProceedShortcut()
           }
         },
         onMessage: (reviewerId, chunk) => {
@@ -877,5 +904,6 @@ export const reviewCommand = new Command('review')
       process.exit(1)
     } finally {
       process.removeListener('SIGINT', sigintHandler)
+      disableForceProceedShortcut()
     }
   })

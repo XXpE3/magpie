@@ -4,6 +4,7 @@ import { notifyProviderActivity } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
+import { terminateProcess } from './process-control.js'
 
 export class ClaudeCodeProvider implements AIProvider {
   name = 'claude-code'
@@ -174,12 +175,7 @@ export class ClaudeCodeProvider implements AIProvider {
     // Timeout checker - kill if no activity for too long
     const timeoutChecker = this.timeout > 0 ? setInterval(() => {
       if (Date.now() - lastActivity > this.timeout) {
-        child.kill('SIGTERM')
-        // Force kill if SIGTERM is ignored
-        const forceKill = setTimeout(() => {
-          try { child.kill('SIGKILL') } catch {}
-        }, 5000)
-        forceKill.unref()
+        terminateProcess(child)
         done = true
         error = new Error(`Claude CLI timed out after ${this.timeout / 1000}s of inactivity`)
         if (resolveNext) {
@@ -187,6 +183,23 @@ export class ClaudeCodeProvider implements AIProvider {
         }
       }
     }, 10000) : null  // Check every 10s
+    const abortStream = () => {
+      if (done) return
+      terminateProcess(child)
+      done = true
+      error = new Error('Claude CLI stream aborted')
+      if (resolveNext) {
+        resolveNext({ chunk: null })
+        resolveNext = null
+      }
+    }
+    const cleanupAbort = () => options?.signal?.removeEventListener('abort', abortStream)
+    if (options?.signal?.aborted) {
+      abortStream()
+    } else {
+      options?.signal?.addEventListener('abort', abortStream, { once: true })
+    }
+
 
     child.stdout.on('data', (data) => {
       lastActivity = Date.now()
@@ -229,6 +242,7 @@ export class ClaudeCodeProvider implements AIProvider {
     child.on('close', (code) => {
       cleanup()
       if (timeoutChecker) clearInterval(timeoutChecker)
+      cleanupAbort()
       done = true
       if (code !== 0 && !error) {
         error = new Error(`Claude CLI exited with code ${code}${stderrOutput ? ': ' + stderrOutput.slice(0, 500) : ''}`)
@@ -241,6 +255,7 @@ export class ClaudeCodeProvider implements AIProvider {
     child.on('error', (err) => {
       cleanup()
       if (timeoutChecker) clearInterval(timeoutChecker)
+      cleanupAbort()
       done = true
       error = new Error(`Failed to run claude CLI: ${err.message}`)
       if (resolveNext) {

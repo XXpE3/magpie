@@ -42,6 +42,10 @@ export class MiniMaxProvider implements AIProvider {
   }
 
   async chat(messages: Message[], systemPrompt?: string, _options?: ChatOptions): Promise<string> {
+    return this.requestChat(messages, systemPrompt)
+  }
+
+  private async requestChat(messages: Message[], systemPrompt?: string, signal?: AbortSignal): Promise<string> {
     // Build API messages
     const apiMessages: Array<{ role: string; content: string }> = []
 
@@ -89,6 +93,7 @@ export class MiniMaxProvider implements AIProvider {
         messages: apiMessages,
         max_tokens: 16000,
       }),
+      signal,
     })
 
     if (!response.ok) {
@@ -122,7 +127,7 @@ export class MiniMaxProvider implements AIProvider {
   async *chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     // MiniMax supports streaming but for simplicity, use non-streaming and yield result
     notifyProviderActivity(options, { kind: 'request', label: 'chat' })
-    const result = await this.chat(messages, systemPrompt)
+    const result = await this.requestChat(messages, systemPrompt, options?.signal)
     notifyProviderActivity(options, { kind: 'output', label: 'result' })
     yield result
   }

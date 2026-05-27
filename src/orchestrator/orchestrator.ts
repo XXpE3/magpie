@@ -24,6 +24,51 @@ export class InterruptedError extends Error {
   constructor() { super('Interrupted by user') }
 }
 
+class ForceProceedError extends Error {
+  constructor() { super('Force proceed requested') }
+}
+
+function isForceProceedError(error: unknown): boolean {
+  return error instanceof ForceProceedError
+}
+
+function stopStream<T>(stream: AsyncGenerator<T, void, unknown>): void {
+  const stopped = stream.return?.()
+  if (stopped) void stopped.catch(() => {})
+}
+
+async function nextStreamChunk<T>(
+  stream: AsyncGenerator<T, void, unknown>,
+  signal?: AbortSignal
+): Promise<IteratorResult<T, void>> {
+  if (!signal) return stream.next()
+  if (signal.aborted) {
+    stopStream(stream)
+    throw new ForceProceedError()
+  }
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+    const onAbort = () => {
+      cleanup()
+      stopStream(stream)
+      reject(new ForceProceedError())
+    }
+
+    signal.addEventListener('abort', onAbort, { once: true })
+    stream.next().then(
+      result => {
+        cleanup()
+        resolve(result)
+      },
+      error => {
+        cleanup()
+        reject(error)
+      }
+    )
+  })
+}
+
 /**
  * Extract changed file paths from a diff/prompt containing `diff --git` headers.
  */
@@ -156,13 +201,14 @@ export class DebateOrchestrator {
     reviewer: Reviewer,
     messages: Message[],
     onChunk?: (chunk: string) => void,
-    onActivity?: (activity: ProviderActivity) => void
+    onActivity?: (activity: ProviderActivity) => void,
+    signal?: AbortSignal
   ): Promise<string> {
     this.options.status?.begin(taskId, phase, reviewer.id)
     let fullResponse = ''
 
     try {
-      for await (const chunk of reviewer.provider.chatStream(
+      const stream = reviewer.provider.chatStream(
         messages,
         this.withLang(reviewer.systemPrompt),
         {
@@ -170,8 +216,15 @@ export class DebateOrchestrator {
             this.options.status?.activity(taskId, activity.label ?? activity.kind)
             onActivity?.(activity)
           },
+          signal,
         }
-      )) {
+      )
+
+      while (true) {
+        const next = await nextStreamChunk(stream, signal)
+        if (next.done) break
+
+        const chunk = next.value
         fullResponse += chunk
         this.options.status?.output(taskId, chunk)
         onChunk?.(chunk)
@@ -180,6 +233,11 @@ export class DebateOrchestrator {
       this.options.status?.done(taskId)
       return fullResponse
     } catch (error) {
+      if (isForceProceedError(error)) {
+        this.options.status?.cancelled(taskId, error)
+        throw error
+      }
+
       const message = error instanceof Error ? error.message : String(error)
       if (message.toLowerCase().includes('timed out')) {
         this.options.status?.timeout(taskId, error)
@@ -602,6 +660,22 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
           if (changed) emitLegacyStatusNow()
         }
         emitLegacyStatusNow()
+        let forceProceedRequested = false
+        const hasCompletedReviewer = () => legacyStatuses.some(status => status.status === 'done')
+        const forceProceedController = new AbortController()
+        try {
+          this.options.onParallelRoundControl?.({
+            round,
+            forceProceed: () => {
+              if (forceProceedRequested || !hasCompletedReviewer()) return
+              forceProceedRequested = true
+              forceProceedController.abort()
+            }
+          })
+        } catch {
+          // Parallel round controls are observational; they must not break review execution.
+        }
+
 
         const reviewerPromises = reviewerTasks.map(async ({ reviewer, messages }, index) => {
           const startTime = Date.now()
@@ -637,7 +711,8 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
                   lastActivityAt: Date.now(),
                   stalledFor: undefined,
                 })
-              }
+              },
+              forceProceedController.signal
             )
             const endTime = Date.now()
             updateLegacyStatus(index, {
@@ -647,16 +722,21 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
               stalledFor: undefined,
             }, true)
             const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
-            return { reviewer, fullResponse, inputText, failed: false as const }
+            return { reviewer, fullResponse, inputText, failed: false as const, cancelled: false as const }
           } catch (err) {
             const endTime = Date.now()
+            const forceProceed = isForceProceedError(err)
             updateLegacyStatus(index, {
-              status: 'error',
+              status: forceProceed ? 'cancelled' : 'error',
               endTime,
               duration: (endTime - (legacyStatuses[index].startTime ?? endTime)) / 1000,
+              stalledFor: undefined,
             }, true)
+            if (forceProceed) {
+              return { reviewer, fullResponse: '', inputText: '', failed: false as const, cancelled: true as const }
+            }
             logger.warn(`Reviewer ${reviewer.id} failed in round ${round}:`, err)
-            return { reviewer, fullResponse: '', inputText: '', failed: true as const, error: err }
+            return { reviewer, fullResponse: '', inputText: '', failed: true as const, cancelled: false as const, error: err }
           }
         })
 
@@ -667,17 +747,29 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         } finally {
           clearInterval(legacyStallInterval)
           clearLegacyStatusTimer()
+          try {
+            this.options.onParallelRoundControl?.(null)
+          } catch {
+            // Parallel round controls are observational; they must not break review execution.
+          }
         }
 
         // Fail only if ALL reviewers failed
-        const successResults = results.filter(r => !r.failed)
+        const successResults = results.filter(r => !r.failed && !r.cancelled)
         if (successResults.length === 0) {
-          const errors = results.map(r => r.failed ? `${r.reviewer.id}: ${r.error instanceof Error ? r.error.message : r.error}` : '').filter(Boolean)
+          const failures = results.filter(r => r.failed)
+          if (failures.length === 0) {
+            throw new Error(`No completed reviewer results in round ${round}; cannot force proceed`)
+          }
+          const errors = failures.map(r => `${r.reviewer.id}: ${r.error instanceof Error ? r.error.message : r.error}`).filter(Boolean)
           throw new Error(`All reviewers failed in round ${round}:\n${errors.join('\n')}`)
         }
 
         // Process results - only add successful ones to history
         for (const result of results) {
+          if (result.cancelled) {
+            continue
+          }
           if (result.failed) {
             this.options.onMessage?.(result.reviewer.id, `[Review failed: ${result.error instanceof Error ? result.error.message : 'unknown error'}]`)
             continue
@@ -703,6 +795,9 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         }
 
         this.options.onRoundComplete?.(round, converged)
+        if (forceProceedRequested) {
+          break
+        }
 
         if (converged) {
           break

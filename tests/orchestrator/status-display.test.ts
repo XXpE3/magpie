@@ -24,6 +24,51 @@ function makeStreamProvider(name: string, chunks: string[], delayMs = 0): AIProv
   }
 }
 
+function makeAbortAwarePendingProvider(name: string, onAbort: () => void): AIProvider {
+  return {
+    name,
+    async chat() { return '```json\n{"issues":[]}\n```' },
+    async *chatStream(_messages, _systemPrompt, options) {
+      await new Promise<void>(resolve => {
+        if (options?.signal?.aborted) {
+          onAbort()
+          resolve()
+          return
+        }
+        options?.signal?.addEventListener('abort', () => {
+          onAbort()
+          resolve()
+        }, { once: true })
+      })
+    }
+  }
+}
+
+function makeControllableProvider(name: string, chunks: string[], onAbort: () => void): { provider: AIProvider; complete(): void } {
+  let complete!: () => void
+  const ready = new Promise<void>(resolve => {
+    complete = resolve
+  })
+  return {
+    provider: {
+      name,
+      async chat() { return '```json\n{"issues":[]}\n```' },
+      async *chatStream(_messages, _systemPrompt, options) {
+        if (options?.signal?.aborted) {
+          onAbort()
+          return
+        }
+        options?.signal?.addEventListener('abort', onAbort, { once: true })
+        await ready
+        for (const chunk of chunks) {
+          yield chunk
+        }
+      }
+    },
+    complete,
+  }
+}
+
 function makeActivityThenChunkProvider(name: string, activityDelays: number[], finalDelayMs: number, chunk: string): AIProvider {
   return {
     name,
@@ -213,6 +258,97 @@ describe('DebateOrchestrator streaming task status', () => {
 
     await vi.advanceTimersByTimeAsync(5_000)
     await runPromise
+  })
+
+  it('ignores force proceed before any reviewer has completed', async () => {
+    let control: { forceProceed(): void } | null = null
+    let firstAborted = false
+    let secondAborted = false
+    const firstProvider = makeControllableProvider('first', ['first result'], () => { firstAborted = true })
+    const secondProvider = makeControllableProvider('second', ['second result'], () => { secondAborted = true })
+    const reviewers = [
+      makeReviewer('first', firstProvider.provider),
+      makeReviewer('second', secondProvider.provider)
+    ]
+    const summarizer = makeReviewer('summarizer', makeStreamProvider('summarizer', ['summary']))
+    const analyzer = makeReviewer('analyzer', makeStreamProvider('analyzer', ['analysis']))
+
+    const orchestrator = new DebateOrchestrator(reviewers, summarizer, analyzer, {
+      maxRounds: 1,
+      interactive: false,
+      checkConvergence: false,
+      skipConclusion: true,
+      onParallelRoundControl: nextControl => {
+        control = nextControl
+        control?.forceProceed()
+      },
+    })
+
+    const runPromise = orchestrator.runStreaming('test', 'Review this code')
+    await Promise.resolve()
+    expect(firstAborted).toBe(false)
+    expect(secondAborted).toBe(false)
+
+    firstProvider.complete()
+    secondProvider.complete()
+    const result = await runPromise
+
+    expect(firstAborted).toBe(false)
+    expect(secondAborted).toBe(false)
+    expect(result.messages.map(message => message.reviewerId).sort()).toEqual(['first', 'second'])
+  })
+
+  it('force-proceeds with completed parallel reviewer results and aborts unfinished reviewers', async () => {
+    let control: { forceProceed(): void } | null = null
+    let forced = false
+    let slowAborted = false
+    const completedRounds: number[] = []
+    const taskSnapshots: TaskStatus[][] = []
+    const legacySnapshots: ReviewerStatus[][] = []
+    const failedMessages: string[] = []
+    const status = new StatusTracker(snapshotStatus(taskSnapshots))
+
+    const fast = makeReviewer('fast', makeStreamProvider('fast', ['fast result']))
+    const slow = makeReviewer('slow', makeAbortAwarePendingProvider('slow', () => { slowAborted = true }))
+    const summarizer = makeReviewer('summarizer', makeStreamProvider('summarizer', ['summary']))
+    const analyzer = makeReviewer('analyzer', makeStreamProvider('analyzer', ['analysis']))
+
+    const orchestrator = new DebateOrchestrator([fast, slow], summarizer, analyzer, {
+      maxRounds: 3,
+      status,
+      interactive: false,
+      checkConvergence: false,
+      skipConclusion: true,
+      onParallelRoundControl: nextControl => {
+        control = nextControl
+      },
+      onParallelStatus: (_round, statuses) => {
+        const fastDone = statuses.some(status => status.reviewerId === 'fast' && status.status === 'done')
+        const slowPending = statuses.some(status => status.reviewerId === 'slow' && status.status !== 'done')
+        legacySnapshots.push(statuses.map(status => ({ ...status })))
+        if (!forced && control && fastDone && slowPending) {
+          forced = true
+          control.forceProceed()
+        }
+      },
+      onRoundComplete: round => {
+        completedRounds.push(round)
+      },
+      onMessage: (_reviewerId, chunk) => {
+        if (chunk.includes('[Review failed')) failedMessages.push(chunk)
+      },
+    })
+
+    const result = await orchestrator.runStreaming('test', 'Review this code')
+
+    expect(slowAborted).toBe(true)
+    expect(completedRounds).toEqual([1])
+    expect(result.messages.map(message => message.reviewerId)).toEqual(['fast'])
+    expect(result.messages[0]?.content).toBe('fast result')
+    expect(legacySnapshots.at(-1)?.find(status => status.reviewerId === 'slow')?.status).toBe('cancelled')
+    expect(taskSnapshots.flat().find(task => task.id === 'reviewer:slow' && task.state === 'cancelled')?.error).toBe('Force proceed requested')
+    expect(taskSnapshots.flat().some(task => task.id === 'reviewer:slow' && task.state === 'error' && task.error?.includes('Force proceed requested'))).toBe(false)
+    expect(failedMessages).toEqual([])
   })
 
   it('preserves final conclusion result and summarizer token usage with status tracking', async () => {

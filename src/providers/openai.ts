@@ -52,7 +52,7 @@ export class OpenAIProvider implements AIProvider {
       model: this.model,
       messages: msgs,
       stream: true
-    })
+    }, { signal: options?.signal })
 
     try {
       for await (const chunk of stream) {

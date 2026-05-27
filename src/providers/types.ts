@@ -19,6 +19,13 @@ export interface ProviderActivity {
 }
 
 export interface ChatStreamOptions extends ChatOptions {
+  /**
+   * Abort an in-flight stream when the caller can proceed without this result.
+   * Providers should pass this to the underlying request where supported. Some
+   * SDKs only cancel the local client request and do not guarantee server-side
+   * generation or billing stops.
+   */
+  signal?: AbortSignal
   onActivity?: (activity: ProviderActivity) => void
 }
 

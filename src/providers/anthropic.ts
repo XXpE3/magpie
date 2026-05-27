@@ -39,7 +39,7 @@ export class AnthropicProvider implements AIProvider {
         role: m.role === 'system' ? 'user' : m.role,
         content: m.content
       }))
-    })
+    }, { signal: options?.signal })
 
     try {
       for await (const event of stream) {

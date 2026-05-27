@@ -2,13 +2,27 @@ import { describe, it, expect, vi } from 'vitest'
 import { OpenAIProvider } from '../../src/providers/openai'
 
 let lastConstructorOptions: Record<string, unknown> = {}
+let lastCreateArgs: unknown[] = []
 
 vi.mock('openai', () => ({
   default: class MockOpenAI {
     chat = {
       completions: {
-        create: vi.fn().mockResolvedValue({
-          choices: [{ message: { content: 'Mock response' } }]
+        create: vi.fn((...args: unknown[]) => {
+          lastCreateArgs = args
+          const body = args[0] as { stream?: boolean }
+          if (body?.stream) {
+            return Promise.resolve({
+              async *[Symbol.asyncIterator]() {
+                yield { choices: [{ delta: { content: 'chunk1' } }] }
+                yield { choices: [{ delta: { content: 'chunk2' } }] }
+              },
+              controller: { abort: vi.fn() }
+            })
+          }
+          return Promise.resolve({
+            choices: [{ message: { content: 'Mock response' } }]
+          })
         })
       }
     }
@@ -43,5 +57,17 @@ describe('OpenAIProvider', () => {
   it('should not set baseURL when not provided', () => {
     new OpenAIProvider({ apiKey: 'test', model: 'gpt-4o' })
     expect(lastConstructorOptions.baseURL).toBeUndefined()
+  })
+  it('should pass AbortSignal to streaming requests', async () => {
+    const provider = new OpenAIProvider({ apiKey: 'test', model: 'gpt-4o' })
+    const controller = new AbortController()
+    const chunks: string[] = []
+
+    for await (const chunk of provider.chatStream([{ role: 'user', content: 'Hello' }], undefined, { signal: controller.signal })) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks).toEqual(['chunk1', 'chunk2'])
+    expect(lastCreateArgs[1]).toEqual({ signal: controller.signal })
   })
 })

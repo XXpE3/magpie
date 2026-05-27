@@ -52,6 +52,7 @@ function formatState(task: TaskStatus): string {
     case 'done': return chalk.green('done')
     case 'error': return chalk.red('error')
     case 'timeout': return chalk.red('timeout')
+    case 'cancelled': return chalk.yellow('cancelled')
   }
 }
 
@@ -62,7 +63,7 @@ function formatElapsed(task: TaskStatus): string {
 }
 
 function formatIdle(task: TaskStatus): string {
-  if (!task.lastActivityAt || task.state === 'done' || task.state === 'error' || task.state === 'timeout') return ''
+  if (!task.lastActivityAt || task.state === 'done' || task.state === 'error' || task.state === 'timeout' || task.state === 'cancelled') return ''
   const idleSeconds = Math.floor((Date.now() - task.lastActivityAt) / 1000)
   if (task.state === 'stalled') return `no provider activity for ${idleSeconds}s`
   if (task.state === 'quiet') return `quiet for ${idleSeconds}s`

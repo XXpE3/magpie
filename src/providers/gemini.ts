@@ -50,7 +50,7 @@ export class GeminiProvider implements AIProvider {
     const chat = model.startChat({ history })
 
     const lastMessage = messages[messages.length - 1]
-    const result = await withRetry(() => chat.sendMessageStream(lastMessage.content))
+    const result = await withRetry(() => chat.sendMessageStream(lastMessage.content, { signal: options?.signal }))
 
     for await (const chunk of result.stream) {
       const text = chunk.text()
@@ -59,6 +59,6 @@ export class GeminiProvider implements AIProvider {
         yield text
       }
     }
-    // Gemini SDK doesn't expose stream.close(); consuming all chunks is sufficient cleanup
+    // Gemini SDK doesn't expose stream.close(); passing AbortSignal cancels the client request where supported, but does not guarantee server-side generation or billing stops.
   }
 }

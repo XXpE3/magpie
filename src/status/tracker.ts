@@ -133,6 +133,11 @@ export class StatusTracker {
     this.finish(id, 'error', message)
   }
 
+  cancelled(id: string, reason?: unknown): void {
+    const message = reason instanceof Error ? reason.message : reason ? String(reason) : undefined
+    this.finish(id, 'cancelled', message)
+  }
+
   timeout(id: string, error?: unknown): void {
     const message = error instanceof Error ? error.message : error ? String(error) : undefined
     this.finish(id, 'timeout', message)
@@ -142,7 +147,7 @@ export class StatusTracker {
     return [...this.tasks.values()]
   }
 
-  private finish(id: string, state: Extract<TaskState, 'done' | 'error' | 'timeout'>, error?: string): void {
+  private finish(id: string, state: Extract<TaskState, 'done' | 'error' | 'timeout' | 'cancelled'>, error?: string): void {
     const task = this.tasks.get(id)
     if (!task) return
 
@@ -205,5 +210,5 @@ export class StatusTracker {
 }
 
 function isTerminal(state: TaskState): boolean {
-  return state === 'done' || state === 'error' || state === 'timeout'
+  return state === 'done' || state === 'error' || state === 'timeout' || state === 'cancelled'
 }

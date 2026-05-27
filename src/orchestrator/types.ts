@@ -36,7 +36,7 @@ export interface DebateResult {
 
 export interface ReviewerStatus {
   reviewerId: string
-  status: 'pending' | 'thinking' | 'streaming' | 'stalled' | 'done' | 'error'
+  status: 'pending' | 'thinking' | 'streaming' | 'stalled' | 'done' | 'error' | 'cancelled'
   startTime?: number      // timestamp ms
   endTime?: number        // timestamp ms
   duration?: number       // seconds
@@ -44,6 +44,11 @@ export interface ReviewerStatus {
   outputChars?: number    // cumulative streamed characters
   chunkCount?: number     // observed stream chunks
   stalledFor?: number     // seconds since last activity
+}
+
+export interface ParallelRoundControl {
+  round: number
+  forceProceed(): void
 }
 
 export interface OrchestratorOptions {
@@ -62,6 +67,8 @@ export interface OrchestratorOptions {
   onContextGathered?: (context: GatheredContext) => void  // Context gathering complete callback
   status?: StatusTracker  // Unified task status tracking
   interruptState?: { interrupted: boolean }  // External interrupt signal (e.g., Ctrl+C)
+  /** Called with a control object while a parallel reviewer round is active; called with null when it ends. */
+  onParallelRoundControl?: (control: ParallelRoundControl | null) => void
   skipConclusion?: boolean  // Skip getFinalConclusion + old verifyConclusion (bot mode)
 }
 
