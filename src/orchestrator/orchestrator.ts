@@ -795,9 +795,6 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         }
 
         this.options.onRoundComplete?.(round, converged)
-        if (forceProceedRequested) {
-          break
-        }
 
         if (converged) {
           break

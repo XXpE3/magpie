@@ -44,7 +44,7 @@ export function formatParallelStatus(
     return chalk.dim(`${status.reviewerId}:○`)
   })
 
-  const hint = hasControl && canForceProceed(statuses) ? chalk.dim(' (press Q to continue)') : ''
+  const hint = hasControl && canForceProceed(statuses) ? chalk.dim(' (press Q to finish current round)') : ''
   return `Round ${round}/${maxRounds}: parallel review [${statusParts.join(' ')}]${hint}`
 }
 

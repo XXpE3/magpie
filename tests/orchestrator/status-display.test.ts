@@ -44,6 +44,45 @@ function makeAbortAwarePendingProvider(name: string, onAbort: () => void): AIPro
   }
 }
 
+function makeFirstCallPendingThenStreamProvider(name: string, onAbort: () => void): AIProvider {
+  let call = 0
+  return {
+    name,
+    async chat() { return '```json\n{"issues":[]}\n```' },
+    async *chatStream(_messages, _systemPrompt, options) {
+      call++
+      if (call === 1) {
+        await new Promise<void>(resolve => {
+          if (options?.signal?.aborted) {
+            onAbort()
+            resolve()
+            return
+          }
+          options?.signal?.addEventListener('abort', () => {
+            onAbort()
+            resolve()
+          }, { once: true })
+        })
+        return
+      }
+      yield `${name} round ${call}`
+    }
+  }
+}
+
+function makeRoundCountingProvider(name: string): AIProvider {
+  let call = 0
+  return {
+    name,
+    async chat() { return '```json\n{"issues":[]}\n```' },
+    async *chatStream() {
+      call++
+      yield `${name} round ${call}`
+    }
+  }
+}
+
+
 function makeControllableProvider(name: string, chunks: string[], onAbort: () => void): { provider: AIProvider; complete(): void } {
   let complete!: () => void
   const ready = new Promise<void>(resolve => {
@@ -298,18 +337,18 @@ describe('DebateOrchestrator streaming task status', () => {
     expect(result.messages.map(message => message.reviewerId).sort()).toEqual(['first', 'second'])
   })
 
-  it('force-proceeds with completed parallel reviewer results and aborts unfinished reviewers', async () => {
+  it('force-proceeds only the current round and continues later rounds', async () => {
     let control: { forceProceed(): void } | null = null
     let forced = false
     let slowAborted = false
     const completedRounds: number[] = []
     const taskSnapshots: TaskStatus[][] = []
-    const legacySnapshots: ReviewerStatus[][] = []
+    const legacySnapshots: Array<{ round: number; statuses: ReviewerStatus[] }> = []
     const failedMessages: string[] = []
     const status = new StatusTracker(snapshotStatus(taskSnapshots))
 
-    const fast = makeReviewer('fast', makeStreamProvider('fast', ['fast result']))
-    const slow = makeReviewer('slow', makeAbortAwarePendingProvider('slow', () => { slowAborted = true }))
+    const fast = makeReviewer('fast', makeRoundCountingProvider('fast'))
+    const slow = makeReviewer('slow', makeFirstCallPendingThenStreamProvider('slow', () => { slowAborted = true }))
     const summarizer = makeReviewer('summarizer', makeStreamProvider('summarizer', ['summary']))
     const analyzer = makeReviewer('analyzer', makeStreamProvider('analyzer', ['analysis']))
 
@@ -322,10 +361,10 @@ describe('DebateOrchestrator streaming task status', () => {
       onParallelRoundControl: nextControl => {
         control = nextControl
       },
-      onParallelStatus: (_round, statuses) => {
+      onParallelStatus: (round, statuses) => {
         const fastDone = statuses.some(status => status.reviewerId === 'fast' && status.status === 'done')
         const slowPending = statuses.some(status => status.reviewerId === 'slow' && status.status !== 'done')
-        legacySnapshots.push(statuses.map(status => ({ ...status })))
+        legacySnapshots.push({ round, statuses: statuses.map(status => ({ ...status })) })
         if (!forced && control && fastDone && slowPending) {
           forced = true
           control.forceProceed()
@@ -342,10 +381,19 @@ describe('DebateOrchestrator streaming task status', () => {
     const result = await orchestrator.runStreaming('test', 'Review this code')
 
     expect(slowAborted).toBe(true)
-    expect(completedRounds).toEqual([1])
-    expect(result.messages.map(message => message.reviewerId)).toEqual(['fast'])
-    expect(result.messages[0]?.content).toBe('fast result')
-    expect(legacySnapshots.at(-1)?.find(status => status.reviewerId === 'slow')?.status).toBe('cancelled')
+    expect(completedRounds).toEqual([1, 2, 3])
+    expect(result.messages.map(message => message.reviewerId)).toEqual(['fast', 'fast', 'slow', 'fast', 'slow'])
+    expect(result.messages.map(message => message.content)).toEqual([
+      'fast round 1',
+      'fast round 2',
+      'slow round 2',
+      'fast round 3',
+      'slow round 3',
+    ])
+    const roundOneCancelled = legacySnapshots
+      .filter(snapshot => snapshot.round === 1)
+      .some(snapshot => snapshot.statuses.find(status => status.reviewerId === 'slow')?.status === 'cancelled')
+    expect(roundOneCancelled).toBe(true)
     expect(taskSnapshots.flat().find(task => task.id === 'reviewer:slow' && task.state === 'cancelled')?.error).toBe('Force proceed requested')
     expect(taskSnapshots.flat().some(task => task.id === 'reviewer:slow' && task.state === 'error' && task.error?.includes('Force proceed requested'))).toBe(false)
     expect(failedMessages).toEqual([])

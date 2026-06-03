@@ -11,14 +11,14 @@ describe('review parallel status helpers', () => {
     const text = formatParallelStatus(1, 3, [status('a', 'pending'), status('b', 'streaming')], true)
 
     expect(canForceProceed([status('a', 'pending'), status('b', 'streaming')])).toBe(false)
-    expect(text).not.toContain('(press Q to continue)')
+    expect(text).not.toContain('(press Q to finish current round)')
   })
 
   it('shows force proceed hint once a reviewer is done and control exists', () => {
     const text = formatParallelStatus(1, 3, [status('a', 'done'), status('b', 'streaming')], true)
 
     expect(canForceProceed([status('a', 'done'), status('b', 'streaming')])).toBe(true)
-    expect(text).toContain('(press Q to continue)')
+    expect(text).toContain('(press Q to finish current round)')
   })
 
   it('only accepts unmodified q or Q as force proceed keys', () => {
