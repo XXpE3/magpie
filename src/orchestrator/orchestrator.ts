@@ -188,7 +188,9 @@ export function buildReviewTargetPayload(target: ReviewTarget, fallbackPrompt = 
     promptForCli = `${header}\n\nUse file-reading tools from ${target.repoRoot} to inspect the requested files.`
     promptForApi = `${header}\n\nHere are the file contents:\n\n${formatFilesSection(target.files)}\n\nAnalyze these files and provide your feedback.`
   } else {
-    promptForCli = `${header}\n\nUse git and file-reading tools from ${target.repoRoot} to inspect the local diff and source context.`
+    promptForCli = target.diff?.trim()
+      ? `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not rely on the working-tree diff being present.`
+      : `${header}\n\nUse git and file-reading tools from ${target.repoRoot} to inspect the local diff and source context.`
     promptForApi = `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback.`
   }
 

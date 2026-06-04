@@ -55,6 +55,21 @@ describe('ReviewTargetPayload', () => {
     expect(prompt).toContain('```diff\ndiff --git a/a.ts b/a.ts\n+const value = 1\n```')
   })
 
+  it('preserves supplied local diff for CLI providers', () => {
+    const target: ReviewTarget = {
+      kind: 'local',
+      label: 'Last Commit',
+      repoRoot: '/repo',
+      diff: 'diff --git a/src/a.ts b/src/a.ts\n+export const a = 1',
+    }
+
+    const prompt = selectReviewPrompt(buildReviewTargetPayload(target), cliCapabilities)
+
+    expect(prompt).toContain('Please review the local code changes.')
+    expect(prompt).toContain('```diff\ndiff --git a/src/a.ts b/src/a.ts\n+export const a = 1\n```')
+    expect(prompt).toContain('do not rely on the working-tree diff being present')
+  })
+
   it('embeds file contents and explicit file errors for API providers', () => {
     const target: ReviewTarget = {
       kind: 'files',
