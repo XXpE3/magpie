@@ -84,7 +84,7 @@ export function parseGitHubPRUrl(prUrl: string): { repo: string; prNumber: strin
   }
 
   const parts = parsed.pathname.split('/').filter(Boolean)
-  if (parts.length !== 4 || parts[2] !== 'pull') {
+  if (parts.length < 4 || parts[2] !== 'pull') {
     throw new Error(`Invalid PR URL: ${prUrl}`)
   }
 

@@ -68,6 +68,16 @@ describe('command helpers', () => {
       prNumber: '42',
       url: 'https://github.com/owner/repo/pull/42',
     })
+    expect(parseGitHubPRUrl('https://github.com/owner/repo/pull/42/files')).toEqual({
+      repo: 'owner/repo',
+      prNumber: '42',
+      url: 'https://github.com/owner/repo/pull/42',
+    })
+    expect(parseGitHubPRUrl('https://github.com/owner/repo/pull/42/commits')).toEqual({
+      repo: 'owner/repo',
+      prNumber: '42',
+      url: 'https://github.com/owner/repo/pull/42',
+    })
 
     expect(() => parseGitHubPRUrl('http://github.com/owner/repo/pull/42')).toThrow('Invalid PR URL')
     expect(() => parseGitHubPRUrl('https://evil.example/owner/repo/pull/42')).toThrow('Invalid PR URL')
