@@ -28,6 +28,8 @@ describe('CLI provider safety defaults', () => {
     const args = (provider as unknown as ClaudeArgsBuilder).buildArgs(false)
 
     expect(args).not.toContain('--dangerously-skip-permissions')
+    expect(args).toContain('--permission-mode')
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('dontAsk')
     expect(args).toContain('--tools')
     expect(args).toContain('--allowedTools')
     expect(args[args.indexOf('--tools') + 1]).toBe('Read,Grep,Glob,Bash')
@@ -49,6 +51,7 @@ describe('CLI provider safety defaults', () => {
     const args = (provider as unknown as ClaudeArgsBuilder).buildArgs(false)
 
     expect(args).toContain('--dangerously-skip-permissions')
+    expect(args).not.toContain('--permission-mode')
     expect(args).not.toContain('--tools')
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Dangerous Claude Code mode'))
   })
@@ -113,6 +116,7 @@ describe('CLI provider safety defaults', () => {
     const args = (provider as unknown as ClaudeArgsBuilder).buildArgs(false, true)
 
     expect(args[args.indexOf('--tools') + 1]).toBe('')
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('dontAsk')
     expect(args).not.toContain('--allowedTools')
   })
 

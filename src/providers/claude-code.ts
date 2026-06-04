@@ -137,6 +137,9 @@ export class ClaudeCodeProvider implements AIProvider {
     if (this.cliModel) {
       args.push('--model', this.cliModel)
     }
+    if (!this.allowDangerousBypass) {
+      args.push('--permission-mode', 'dontAsk')
+    }
     if (disableTools) {
       args.push('--tools', '')
     } else if (!this.allowDangerousBypass) {
