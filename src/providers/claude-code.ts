@@ -8,12 +8,6 @@ import { terminateProcess } from './process-control.js'
 import { logger } from '../utils/logger.js'
 
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob']
-const LOCAL_READ_ONLY_BASH_TOOLS = [
-  'Bash(git diff *)',
-  'Bash(git show *)',
-  'Bash(git log *)',
-  'Bash(git status *)',
-]
 const NETWORK_READ_ONLY_BASH_TOOLS = [
   'Bash(gh pr view *)',
   'Bash(gh pr diff *)',
@@ -98,11 +92,12 @@ export class ClaudeCodeProvider implements AIProvider {
   }
 
   private buildAvailableTools(): string[] {
-    const tools = new Set([...READ_ONLY_TOOLS, 'Bash'])
+    const tools = new Set(READ_ONLY_TOOLS)
     if (this.allowWrite) {
       for (const tool of WRITE_TOOLS) tools.add(tool)
     }
     if (this.allowNetwork) {
+      tools.add('Bash')
       for (const tool of NETWORK_TOOLS) tools.add(tool)
     }
     for (const tool of this.extraAllowedTools) {
@@ -114,7 +109,7 @@ export class ClaudeCodeProvider implements AIProvider {
   }
 
   private buildAllowedTools(): string[] {
-    const tools = new Set([...READ_ONLY_TOOLS, ...LOCAL_READ_ONLY_BASH_TOOLS])
+    const tools = new Set(READ_ONLY_TOOLS)
     if (this.allowWrite) {
       for (const tool of WRITE_TOOLS) tools.add(tool)
     }

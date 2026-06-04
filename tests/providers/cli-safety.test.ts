@@ -32,15 +32,11 @@ describe('CLI provider safety defaults', () => {
     expect(args[args.indexOf('--permission-mode') + 1]).toBe('dontAsk')
     expect(args).toContain('--tools')
     expect(args).toContain('--allowedTools')
-    expect(args[args.indexOf('--tools') + 1]).toBe('Read,Grep,Glob,Bash')
+    expect(args[args.indexOf('--tools') + 1]).toBe('Read,Grep,Glob')
     expect(args[args.indexOf('--allowedTools') + 1]).toBe([
       'Read',
       'Grep',
       'Glob',
-      'Bash(git diff *)',
-      'Bash(git show *)',
-      'Bash(git log *)',
-      'Bash(git status *)',
     ].join(','))
   })
 
@@ -72,10 +68,10 @@ describe('CLI provider safety defaults', () => {
       'Read',
       'Grep',
       'Glob',
-      'Bash',
       'Edit',
       'MultiEdit',
       'Write',
+      'Bash',
       'WebFetch',
       'WebSearch',
     ])
@@ -83,10 +79,6 @@ describe('CLI provider safety defaults', () => {
       'Read',
       'Grep',
       'Glob',
-      'Bash(git diff *)',
-      'Bash(git show *)',
-      'Bash(git log *)',
-      'Bash(git status *)',
       'Edit',
       'MultiEdit',
       'Write',
