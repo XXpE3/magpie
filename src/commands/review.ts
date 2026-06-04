@@ -1,16 +1,18 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 import { loadConfig } from '../config/loader.js'
 import type { CliProviderConfig, MagpieConfig, ReviewerConfig } from '../config/types.js'
 import { createProvider, isCliModel } from '../providers/factory.js'
-import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
+import { DebateOrchestrator, buildReviewTargetPayload } from '../orchestrator/orchestrator.js'
 import type { DebateResult, Reviewer, ReviewerStatus } from '../orchestrator/types.js'
 import { createInterface, emitKeypressEvents } from 'readline'
 import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
 import { ContextGatherer } from '../context-gatherer/index.js'
-import type { ReviewTarget, ReviewerSessionState } from './review/types.js'
+import type { ReviewTarget, ReviewTargetFile, ReviewerSessionState } from './review/types.js'
 import { fixMarkdown, getRandomJoke, formatMarkdown } from './review/utils.js'
 import { selectReviewers, interactiveFollowUpQA, interactiveCommentReview, interactivePostReviewDiscussion, interactiveGeneralDiscussion } from './review/interactive.js'
 import { handleRepoReview } from './review/repo-review.js'
@@ -53,7 +55,29 @@ export function canReviewersFetchPr(config: MagpieConfig, reviewerConfigs: Revie
 }
 
 export function buildBranchReviewPrompt(currentBranch: string, baseBranch: string, diff: string): string {
-  return `Please review the changes in branch "${currentBranch}" compared to "${baseBranch}".\n\nHere is the branch diff:\n\n\`\`\`diff\n${diff}\n\`\`\`\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not attempt to fetch it again.`
+  return buildReviewTargetPayload({
+    kind: 'branch',
+    label: `Branch: ${currentBranch}`,
+    repoRoot: process.cwd(),
+    baseBranch,
+    diff
+  }).promptForApi
+}
+
+function readReviewFiles(files: string[], repoRoot: string): ReviewTargetFile[] {
+  return files.map(file => {
+    try {
+      return {
+        path: file,
+        content: readFileSync(resolve(repoRoot, file), 'utf-8')
+      }
+    } catch (error) {
+      return {
+        path: file,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  })
 }
 
 export const reviewCommand = new Command('review')
@@ -176,18 +200,18 @@ export const reviewCommand = new Command('review')
       }
 
       // Determine review target
+      const repoRoot = process.cwd()
       let target: ReviewTarget
 
       if (options.local) {
         target = {
-          type: 'local',
+          kind: 'local',
           label: reviewingLastCommit ? 'Last Commit' : 'Local Changes',
-          prompt: reviewingLastCommit
-            ? `Please review the following code changes from the last commit:\n\n\`\`\`diff\n${localDiff}\n\`\`\`\n\nAnalyze these changes and provide your feedback.`
-            : `Please review the following local code changes (uncommitted diff):\n\n\`\`\`diff\n${localDiff}\n\`\`\`\n\nAnalyze these changes and provide your feedback.`
+          repoRoot,
+          diff: localDiff ?? ''
         }
       } else if (options.branch !== undefined) {
-        const baseBranch = typeof options.branch === 'string' ? options.branch : 'main'
+        const baseBranch = typeof options.branch === 'string' ? options.branch : config.defaults.base_branch || 'main'
         const currentBranch = runGit(['branch', '--show-current']).trim()
         let branchDiff = ''
         try {
@@ -209,15 +233,19 @@ export const reviewCommand = new Command('review')
         }
         spinner.succeed(`Found branch changes (${branchDiff.split('\n').length} lines)`)
         target = {
-          type: 'branch',
+          kind: 'branch',
           label: `Branch: ${currentBranch}`,
-          prompt: buildBranchReviewPrompt(currentBranch, baseBranch, branchDiff)
+          repoRoot,
+          baseBranch,
+          diff: branchDiff
         }
       } else if (options.files) {
+        const files = readReviewFiles(options.files, repoRoot)
         target = {
-          type: 'files',
+          kind: 'files',
           label: `Files: ${options.files.join(', ')}`,
-          prompt: `Review the following files: ${options.files.join(', ')}.`
+          repoRoot,
+          files
         }
       } else if (pr) {
         // Support both PR number and full URL
@@ -264,88 +292,81 @@ export const reviewCommand = new Command('review')
           }
         }
 
-        // Fetch PR metadata (title/body) — always needed
+        // Fetch PR metadata. Base branch comes from GitHub instead of a hard-coded default.
         let prTitle = ''
         let prBody = ''
+        let baseBranch: string | undefined
+        let headSha: string | undefined
         try {
-          const prInfo = JSON.parse(runGh(['pr', 'view', prUrl, '--json', 'title,body'], { timeout: 30000 }))
+          const prInfo = JSON.parse(runGh(['pr', 'view', prUrl, '--json', 'title,body,baseRefName,headRefOid'], { timeout: 30000 }))
           prTitle = prInfo.title || ''
           prBody = prInfo.body || ''
+          baseBranch = prInfo.baseRefName || undefined
+          headSha = prInfo.headRefOid || undefined
         } catch {
           // Non-fatal: reviewers can still work without metadata
         }
 
-        // Check if all reviewers (+ analyzer) are CLI-based.
-        // CLI providers can fetch diff and read code themselves via tools.
-        // API providers need the diff pre-fetched and embedded in the prompt.
+        let prDiff = ''
+        let diffNotice: string | undefined
+        try {
+          prDiff = runGh(['pr', 'diff', prUrl], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 })
+          const originalLines = prDiff.split('\n').length
+          prDiff = filterDiff(prDiff, config.defaults.diff_exclude)
+          const filteredLines = prDiff.split('\n').length
+          if (filteredLines < originalLines) {
+            console.log(chalk.dim(`  Diff filtered: ${originalLines} -> ${filteredLines} lines (excluded generated files)`))
+          }
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e)
+          if (errMsg.includes('406') || errMsg.includes('too_large') || errMsg.includes('exceeded')) {
+            console.log(chalk.yellow(`  PR diff too large for GitHub API, fetching via files API...`))
+            try {
+              const repo = prRepo || (() => {
+                const remoteUrl = runGit(['remote', 'get-url', 'origin']).trim()
+                const m = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
+                return m ? validateGitHubRepo(m[1]) : ''
+              })()
+              if (repo) {
+                const result = fetchLargePRDiff(repo, prNumber, {
+                  maxLines: 15000,
+                  excludePatterns: config.defaults.diff_exclude
+                })
+                prDiff = filterDiff(result.diff, config.defaults.diff_exclude)
+                console.log(chalk.dim(`  Reconstructed diff: ${result.includedFiles}/${result.totalFiles} files (~${prDiff.split('\n').length} lines)`))
+                if (result.truncated) {
+                  console.log(chalk.yellow(`  Diff truncated to fit context window. Some files excluded.`))
+                  diffNotice = `NOTE: This is a large PR. ${result.summary}`
+                }
+              }
+            } catch (fallbackErr) {
+              console.error(chalk.yellow(`Warning: Fallback diff fetch also failed: ${fallbackErr instanceof Error ? fallbackErr.message.slice(0, 100) : fallbackErr}`))
+            }
+          } else {
+            console.error(chalk.yellow(`Warning: Could not pre-fetch PR diff: ${errMsg.slice(0, 100)}`))
+          }
+        }
+
         const allReviewerConfigs = [
           ...Object.values(config.reviewers),
           config.analyzer,
           config.summarizer,
         ]
-        const cliReviewersCanFetchPr = canReviewersFetchPr(config, allReviewerConfigs)
-
-        let prPrompt: string
-        if (cliReviewersCanFetchPr) {
-          // CLI mode: reviewers fetch diff and read code themselves
-          console.log(chalk.dim(`  CLI-only reviewers detected — reviewers will fetch diff and read code directly`))
-          prPrompt = `Please review ${prUrl}.\n\nTitle: ${prTitle}\n\nDescription:\n${prBody}\n\nYou have full access to the repository. Use \`gh pr diff ${prUrl}\` to get the diff, then use Read/Grep tools to examine the actual source files for context. Review every changed file and function systematically.`
-        } else {
-          // API reviewers, and CLI reviewers without network permission, need the diff embedded.
-          let prDiff = ''
-          let diffTruncationNote = ''
-          try {
-            prDiff = runGh(['pr', 'diff', prUrl], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 })
-            const originalLines = prDiff.split('\n').length
-            prDiff = filterDiff(prDiff, config.defaults.diff_exclude)
-            const filteredLines = prDiff.split('\n').length
-            if (filteredLines < originalLines) {
-              console.log(chalk.dim(`  Diff filtered: ${originalLines} → ${filteredLines} lines (excluded generated files)`))
-            }
-          } catch (e) {
-            const errMsg = e instanceof Error ? e.message : String(e)
-            // Fallback: for large PRs that exceed GitHub's 20k line limit,
-            // reconstruct diff from the per-file patches API
-            if (errMsg.includes('406') || errMsg.includes('too_large') || errMsg.includes('exceeded')) {
-              console.log(chalk.yellow(`  PR diff too large for GitHub API, fetching via files API...`))
-              try {
-                const repo = prRepo || (() => {
-                  const remoteUrl = runGit(['remote', 'get-url', 'origin']).trim()
-                  const m = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
-                  return m ? validateGitHubRepo(m[1]) : ''
-                })()
-                if (repo) {
-                  const result = fetchLargePRDiff(repo, prNumber, {
-                    maxLines: 15000,
-                    excludePatterns: config.defaults.diff_exclude
-                  })
-                  prDiff = filterDiff(result.diff, config.defaults.diff_exclude)
-                  if (result.truncated) {
-                    diffTruncationNote = `\n\n⚠️ NOTE: This is a large PR. ${result.summary}`
-                  }
-                  console.log(chalk.dim(`  Reconstructed diff: ${result.includedFiles}/${result.totalFiles} files (~${prDiff.split('\n').length} lines)`))
-                  if (result.truncated) {
-                    console.log(chalk.yellow(`  ⚠ Diff truncated to fit context window. Some files excluded.`))
-                  }
-                }
-              } catch (fallbackErr) {
-                console.error(chalk.yellow(`Warning: Fallback diff fetch also failed: ${fallbackErr instanceof Error ? fallbackErr.message.slice(0, 100) : fallbackErr}`))
-              }
-            } else {
-              console.error(chalk.yellow(`Warning: Could not pre-fetch PR diff: ${errMsg.slice(0, 100)}`))
-            }
-          }
-
-          prPrompt = prDiff
-            ? `Please review ${prUrl}.\n\nTitle: ${prTitle}\n\nDescription:\n${prBody}${diffTruncationNote}\n\nHere is the PR diff:\n\n\`\`\`diff\n${prDiff}\`\`\`\n\nAnalyze these changes and provide your feedback. You already have the complete diff above — do NOT attempt to fetch it again.`
-            : `Please review ${prUrl}. Get the PR details and diff using any method available to you, then analyze the changes.`
-        }
 
         target = {
-          type: 'pr',
+          kind: 'pr',
           label: `PR #${prNumber}`,
-          prompt: prPrompt,
-          repo: prRepo
+          repoRoot,
+          repo: prRepo,
+          prNumber,
+          prUrl,
+          prTitle,
+          prBody,
+          baseBranch,
+          headSha,
+          diff: prDiff,
+          diffNotice,
+          cliCanFetchPr: canReviewersFetchPr(config, allReviewerConfigs)
         }
       } else {
         spinner.fail('Error')
@@ -748,7 +769,11 @@ export const reviewCommand = new Command('review')
 
       let result: DebateResult
       try {
-        result = await orchestrator.runStreaming(target.label, target.prompt)
+        result = await orchestrator.runStreaming(
+          target.label,
+          buildReviewTargetPayload(target).promptForCli,
+          target
+        )
       } finally {
         status.stop()
         statusRenderer.clear()
@@ -842,7 +867,7 @@ export const reviewCommand = new Command('review')
       const reviewerSessions = new Map<string, ReviewerSessionState>()
 
       // PR reviews: General Discussion → Issue-by-issue loop
-      if (options.post !== false && target.type === 'pr' && result.parsedIssues && result.parsedIssues.length > 0) {
+      if (options.post !== false && target.kind === 'pr' && result.parsedIssues && result.parsedIssues.length > 0) {
         if (!rl) {
           rl = createInterface({ input: process.stdin, output: process.stdout })
         }

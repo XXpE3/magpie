@@ -5,6 +5,7 @@ import { createInterface } from 'readline'
 import { marked } from 'marked'
 import type { Message } from '../../providers/types.js'
 import type { Reviewer, MergedIssue, DebateResult } from '../../orchestrator/types.js'
+import { buildReviewTargetPayload } from '../../orchestrator/orchestrator.js'
 import type { ReviewTarget, ReviewerSessionState } from './types.js'
 import { fixMarkdown, formatIssueForGitHub } from './utils.js'
 
@@ -242,8 +243,8 @@ export function buildInitialSessionContext(
   // 1. Role explanation
   parts.push(`You are reviewer "${reviewer.id}" entering the post-review discussion phase. The human will discuss specific issues with you one by one. You have the full context of the PR and your original review below.`)
 
-  // 2. PR diff (from target.prompt)
-  parts.push(`## PR Diff & Review Prompt\n\n${target.prompt}`)
+  // 2. Review target payload
+  parts.push(`## Review Target\n\n${buildReviewTargetPayload(target).promptForApi}`)
 
   // 3. Gathered context summary
   if (debateResult.context?.summary) {

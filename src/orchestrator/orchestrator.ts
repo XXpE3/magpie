@@ -1,5 +1,5 @@
 // src/orchestrator/orchestrator.ts
-import type { Message, ProviderActivity } from '../providers/types.js'
+import type { AIProvider, Message, ProviderActivity, ProviderCapabilities } from '../providers/types.js'
 import type { TaskPhase } from '../status/types.js'
 import type {
   Reviewer,
@@ -8,7 +8,9 @@ import type {
   OrchestratorOptions,
   TokenUsage,
   ReviewerStatus,
-  MergedIssue
+  MergedIssue,
+  ReviewTarget,
+  ReviewTargetPayload
 } from './types.js'
 import type { ContextGatherer } from '../context-gatherer/gatherer.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
@@ -116,6 +118,97 @@ export function extractDiffLineRanges(diff: string): string {
     .join('\n')
 }
 
+function targetHeader(target: ReviewTarget): string {
+  if (target.kind === 'pr') {
+    return `Please review ${target.prUrl || target.label}.`
+  }
+  if (target.kind === 'branch') {
+    const branchName = target.label.replace(/^Branch:\s*/, '')
+    return `Please review the changes in branch "${branchName}"${target.baseBranch ? ` compared to "${target.baseBranch}"` : ''}.`
+  }
+  if (target.kind === 'files') {
+    const files = target.files?.map(file => file.path).join(', ') || 'the requested files'
+    return `Please review the following files: ${files}.`
+  }
+  return 'Please review the local code changes.'
+}
+
+function formatPrMetadata(target: ReviewTarget): string {
+  const sections: string[] = []
+  if (target.prTitle?.trim()) {
+    sections.push(`Title: ${target.prTitle}`)
+  }
+  if (target.prBody?.trim()) {
+    sections.push(`Description:\n${target.prBody}`)
+  }
+  return sections.join('\n\n')
+}
+
+function formatDiffSection(diff: string | undefined, notice?: string): string {
+  if (!diff?.trim()) {
+    return 'Diff was not available. Report this clearly instead of guessing from missing changes.'
+  }
+  const noticeSection = notice ? `${notice}\n\n` : ''
+  return `${noticeSection}Here is the diff:\n\n\`\`\`diff\n${diff}\n\`\`\``
+}
+
+function formatFilesSection(files: ReviewTarget['files'] | undefined): string {
+  if (!files || files.length === 0) {
+    return 'No file contents were available. Report this clearly instead of guessing from missing files.'
+  }
+
+  return files.map(file => {
+    if (file.error) {
+      return `## ${file.path}\n\nError reading file: ${file.error}`
+    }
+    return `## ${file.path}\n\n\`\`\`\n${file.content ?? ''}\n\`\`\``
+  }).join('\n\n')
+}
+
+export function buildReviewTargetPayload(target: ReviewTarget, fallbackPrompt = ''): ReviewTargetPayload {
+  const header = targetHeader(target)
+  let promptForCli = ''
+  let promptForApi = ''
+
+  if (target.kind === 'pr') {
+    const metadata = formatPrMetadata(target)
+    const metadataSection = metadata ? `\n\n${metadata}` : ''
+    const hasDiff = Boolean(target.diff?.trim())
+    promptForCli = target.cliCanFetchPr === false && hasDiff
+      ? `${header}${metadataSection}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not attempt to fetch it again.`
+      : `${header}\n\nUse your repository tools to inspect the changed files and relevant context. Review every changed file and function systematically.`
+    if (target.cliCanFetchPr !== false || !hasDiff) {
+      promptForCli = `${header}${metadataSection}\n\nUse your repository tools to inspect the changed files and relevant context. Review every changed file and function systematically.`
+    }
+    promptForApi = `${header}${metadataSection}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback.`
+  } else if (target.kind === 'branch') {
+    promptForCli = `${header}\n\nUse git and file-reading tools from ${target.repoRoot} to inspect the branch diff and source context.`
+    promptForApi = `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not attempt to fetch it again.`
+  } else if (target.kind === 'files') {
+    promptForCli = `${header}\n\nUse file-reading tools from ${target.repoRoot} to inspect the requested files.`
+    promptForApi = `${header}\n\nHere are the file contents:\n\n${formatFilesSection(target.files)}\n\nAnalyze these files and provide your feedback.`
+  } else {
+    promptForCli = target.diff?.trim()
+      ? `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not rely on the working-tree diff being present.`
+      : `${header}\n\nUse git and file-reading tools from ${target.repoRoot} to inspect the local diff and source context.`
+    promptForApi = `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback.`
+  }
+
+  return {
+    promptForCli: promptForCli || fallbackPrompt,
+    promptForApi: promptForApi || fallbackPrompt,
+    diff: target.diff,
+    diffNotice: target.diffNotice,
+    files: target.files
+  }
+}
+
+export function selectReviewPrompt(payload: ReviewTargetPayload, capabilities?: ProviderCapabilities): string {
+  return capabilities?.canReadRepo === true && capabilities.canUseTools === true
+    ? payload.promptForCli
+    : payload.promptForApi
+}
+
 export class DebateOrchestrator {
   private reviewers: Reviewer[]
   private summarizer: Reviewer
@@ -127,6 +220,8 @@ export class DebateOrchestrator {
   private analysis: string = ''  // Store analysis to avoid repeating diff
   private gatheredContext: GatheredContext | null = null  // Store gathered context
   private taskPrompt: string = ''  // Original task prompt (contains PR number, etc.)
+  private reviewTarget: ReviewTarget | null = null
+  private reviewTargetPayload: ReviewTargetPayload | null = null
   private lastSeenIndex: Map<string, number> = new Map()  // Track what each reviewer has seen
 
   constructor(
@@ -166,6 +261,19 @@ export class DebateOrchestrator {
   private withLang(systemPrompt?: string): string | undefined {
     if (!systemPrompt) return systemPrompt
     return this.langPrefix + systemPrompt
+  }
+
+  private setReviewTarget(prompt: string, target?: ReviewTarget): void {
+    this.reviewTarget = target || null
+    this.reviewTargetPayload = target
+      ? buildReviewTargetPayload(target, prompt)
+      : { promptForCli: prompt, promptForApi: prompt }
+    this.taskPrompt = this.reviewTargetPayload.promptForApi
+  }
+
+  private promptFor(provider: AIProvider): string {
+    if (!this.reviewTargetPayload) return this.taskPrompt
+    return selectReviewPrompt(this.reviewTargetPayload, provider.capabilities)
   }
 
   // Estimate tokens from text (CJK ~0.7 tokens/char, English ~0.25 tokens/char)
@@ -363,16 +471,17 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     return response
   }
 
-  async run(label: string, prompt: string): Promise<DebateResult> {
+  async run(label: string, prompt: string, target?: ReviewTarget): Promise<DebateResult> {
     this.conversationHistory = []
     this.tokenUsage.clear()
     this.lastSeenIndex.clear()
-    this.taskPrompt = prompt
+    this.setReviewTarget(prompt, target)
     let convergedAtRound: number | undefined
 
     try {
       // Run pre-analysis first and store it
-      this.analysis = await this.preAnalyze(prompt)
+      const analysisPrompt = this.promptFor(this.analyzer.provider)
+      this.analysis = await this.preAnalyze(analysisPrompt)
       this.checkInterrupt()
 
       // Run debate rounds
@@ -466,12 +575,12 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     }
   }
 
-  async runStreaming(label: string, prompt: string): Promise<DebateResult> {
+  async runStreaming(label: string, prompt: string, target?: ReviewTarget): Promise<DebateResult> {
     this.conversationHistory = []
     this.tokenUsage.clear()
     this.lastSeenIndex.clear()
     this.analysis = ''
-    this.taskPrompt = prompt
+    this.setReviewTarget(prompt, target)
     let convergedAtRound: number | undefined
 
     // Start sessions for reviewers that support it (with descriptive names for session listings)
@@ -489,8 +598,11 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
             this.options.onWaiting?.('context-gatherer')
             this.options.status?.begin('context', 'context', 'context gathering')
             try {
-              const diff = this.extractDiffFromPrompt(prompt)
-              this.gatheredContext = await this.contextGatherer!.gather(diff, label, 'main')
+              const diff = this.reviewTargetPayload?.diff ?? this.extractDiffFromPrompt(this.taskPrompt)
+              const prNumber = this.reviewTarget?.prNumber ?? label
+              const baseBranch = this.reviewTarget?.baseBranch ?? 'main'
+              const cwd = this.reviewTarget?.repoRoot ?? process.cwd()
+              this.gatheredContext = await this.contextGatherer!.gather(diff, prNumber, baseBranch, cwd)
               this.options.status?.done('context')
             } catch (error) {
               this.options.status?.error('context', error)
@@ -500,7 +612,8 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         : Promise.resolve()
 
       const analysisPromise = (async () => {
-        const analyzeMessages: Message[] = [{ role: 'user', content: prompt }]
+        const analysisPrompt = this.promptFor(this.analyzer.provider)
+        const analyzeMessages: Message[] = [{ role: 'user', content: analysisPrompt }]
         this.options.onWaiting?.('analyzer')
         this.analysis = await this.collectStream(
           'analyzer',
@@ -509,7 +622,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
           analyzeMessages,
           chunk => this.options.onMessage?.('analyzer', chunk)
         )
-        this.trackTokens('analyzer', prompt + (this.analyzer.systemPrompt || ''), this.analysis)
+        this.trackTokens('analyzer', analysisPrompt + (this.analyzer.systemPrompt || ''), this.analysis)
       })()
 
       await Promise.all([contextPromise, analysisPromise])
@@ -886,7 +999,8 @@ ${this.gatheredContext.summary}
       }
 
       // First round - independent, exhaustive review
-      const prompt = `Task: ${this.taskPrompt}
+      const taskPrompt = reviewer ? this.promptFor(reviewer.provider) : this.taskPrompt
+      const prompt = `Task: ${taskPrompt}
 ${contextSection}${focusSection}${callChainSection}Here is the analysis:
 
 ${this.analysis}
