@@ -40,6 +40,7 @@ export function notifyProviderActivity(options: ChatStreamOptions | undefined, a
 
 export interface AIProvider {
   name: string
+  capabilities: ProviderCapabilities
   chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string>
   chatStream(messages: Message[], systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown>
   setCwd?(cwd: string): void
@@ -47,6 +48,15 @@ export interface AIProvider {
   sessionId?: string
   startSession?(name?: string): void  // Create a new session, optional name for identification
   endSession?(): void    // Clean up session
+}
+
+export interface ProviderCapabilities {
+  canReadRepo: boolean
+  canUseTools: boolean
+  canDisableTools: boolean
+  supportsStreaming: boolean
+  supportsAbort: boolean
+  supportsSession: boolean
 }
 
 export interface ProviderOptions {

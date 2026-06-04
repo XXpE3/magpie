@@ -4,7 +4,7 @@ import { notifyProviderActivity } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
-import { terminateProcess } from './process-control.js'
+import { runCliProcess, terminateProcess } from './process-control.js'
 import { logger } from '../utils/logger.js'
 
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob']
@@ -17,6 +17,14 @@ const NETWORK_TOOLS = ['WebFetch', 'WebSearch']
 
 export class ClaudeCodeProvider implements AIProvider {
   name = 'claude-code'
+  capabilities = {
+    canReadRepo: true,
+    canUseTools: true,
+    canDisableTools: true,
+    supportsStreaming: true,
+    supportsAbort: true,
+    supportsSession: true,
+  }
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private cliModel?: string
@@ -148,62 +156,31 @@ export class ClaudeCodeProvider implements AIProvider {
   }
 
   private runClaude(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
-
-    return new Promise((resolve, reject) => {
-      const args = this.buildArgs(false, options?.disableTools)
-      if (this.session.sessionId) {
-        if (this.session.isFirstMessage) {
-          args.push('--session-id', this.session.sessionId)
-          if (systemPrompt) {
-            args.push('--system-prompt', systemPrompt)
-          }
-        } else {
-          args.push('--resume', this.session.sessionId)
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
+    const args = this.buildArgs(false, options?.disableTools)
+    if (this.session.sessionId) {
+      if (this.session.isFirstMessage) {
+        args.push('--session-id', this.session.sessionId)
+        if (systemPrompt) {
+          args.push('--system-prompt', systemPrompt)
         }
+      } else {
+        args.push('--resume', this.session.sessionId)
       }
+    }
 
-      const child = spawn('claude', args, {
-        cwd: this.cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: this.spawnEnv()
-      })
-
-      let output = ''
-      let error = ''
-
-      child.stdout.on('data', (data) => {
-        output += data.toString()
-      })
-
-      child.stderr.on('data', (data) => {
-        error += data.toString()
-      })
-
-      child.on('close', (code) => {
-        cleanup()
-        if (code !== 0) {
-          reject(new Error(`Claude CLI exited with code ${code}: ${error}`))
-        } else {
-          resolve(output.trim())
-        }
-      })
-
-      child.on('error', (err) => {
-        cleanup()
-        reject(new Error(`Failed to run claude CLI: ${err.message}`))
-      })
-
-      // Write prompt to stdin and close
-      // Suppress EPIPE: if child exits early, close handler reports the real error
-      child.stdin.on('error', () => {})
-      child.stdin.write(stdinPrompt)
-      child.stdin.end()
-    })
+    return runCliProcess({
+      command: 'claude',
+      args,
+      cwd: this.cwd,
+      stdin: stdinPrompt,
+      env: this.spawnEnv(),
+      timeoutMs: this.timeout,
+    }).then(({ stdout }) => stdout.trim()).finally(cleanup)
   }
 
   private async *runClaudeStream(prompt: string, systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
 
     // Use --output-format stream-json --verbose so that tool activity (Read, Bash, etc.)
     // produces stdout events, preventing the inactivity timeout from killing Claude

@@ -5,6 +5,15 @@ import type { Reviewer, ReviewerStatus } from '../../src/orchestrator/types.js'
 import { StatusTracker } from '../../src/status/tracker.js'
 import type { TaskStatus } from '../../src/status/types.js'
 
+const testCapabilities = {
+  canReadRepo: false,
+  canUseTools: false,
+  canDisableTools: false,
+  supportsStreaming: true,
+  supportsAbort: true,
+  supportsSession: false,
+}
+
 function makeReviewer(id: string, provider: AIProvider): Reviewer {
   return { id, provider, systemPrompt: `${id} prompt` }
 }
@@ -12,6 +21,7 @@ function makeReviewer(id: string, provider: AIProvider): Reviewer {
 function makeStreamProvider(name: string, chunks: string[], delayMs = 0): AIProvider {
   return {
     name,
+    capabilities: testCapabilities,
     async chat() { return '```json\n{"issues":[]}\n```' },
     async *chatStream() {
       if (delayMs > 0) {
@@ -27,6 +37,7 @@ function makeStreamProvider(name: string, chunks: string[], delayMs = 0): AIProv
 function makeAbortAwarePendingProvider(name: string, onAbort: () => void): AIProvider {
   return {
     name,
+    capabilities: testCapabilities,
     async chat() { return '```json\n{"issues":[]}\n```' },
     async *chatStream(_messages, _systemPrompt, options) {
       await new Promise<void>(resolve => {
@@ -48,6 +59,7 @@ function makeFirstCallPendingThenStreamProvider(name: string, onAbort: () => voi
   let call = 0
   return {
     name,
+    capabilities: testCapabilities,
     async chat() { return '```json\n{"issues":[]}\n```' },
     async *chatStream(_messages, _systemPrompt, options) {
       call++
@@ -74,6 +86,7 @@ function makeRoundCountingProvider(name: string): AIProvider {
   let call = 0
   return {
     name,
+    capabilities: testCapabilities,
     async chat() { return '```json\n{"issues":[]}\n```' },
     async *chatStream() {
       call++
@@ -91,6 +104,7 @@ function makeControllableProvider(name: string, chunks: string[], onAbort: () =>
   return {
     provider: {
       name,
+      capabilities: testCapabilities,
       async chat() { return '```json\n{"issues":[]}\n```' },
       async *chatStream(_messages, _systemPrompt, options) {
         if (options?.signal?.aborted) {
@@ -111,6 +125,7 @@ function makeControllableProvider(name: string, chunks: string[], onAbort: () =>
 function makeActivityThenChunkProvider(name: string, activityDelays: number[], finalDelayMs: number, chunk: string): AIProvider {
   return {
     name,
+    capabilities: testCapabilities,
     async chat() { return '```json\n{"issues":[]}\n```' },
     async *chatStream(_messages, _systemPrompt, options) {
       for (const delay of activityDelays) {

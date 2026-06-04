@@ -5,6 +5,14 @@ import { withRetry } from '../utils/retry.js'
 
 export class AnthropicProvider implements AIProvider {
   name = 'anthropic'
+  capabilities = {
+    canReadRepo: false,
+    canUseTools: false,
+    canDisableTools: false,
+    supportsStreaming: true,
+    supportsAbort: true,
+    supportsSession: false,
+  }
   private client: Anthropic
   private model: string
 

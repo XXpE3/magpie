@@ -23,9 +23,17 @@ export interface PreparedPrompt {
   cleanup: () => void
 }
 
-export function preparePromptForCli(prompt: string): PreparedPrompt {
+export interface PreparePromptForCliOptions {
+  allowTempFile?: boolean
+}
+
+export function preparePromptForCli(prompt: string, options: PreparePromptForCliOptions = {}): PreparedPrompt {
   if (Buffer.byteLength(prompt, 'utf-8') <= PROMPT_SIZE_THRESHOLD) {
     return { prompt, cleanup: () => {} }
+  }
+
+  if (options.allowTempFile === false) {
+    throw new Error('Prompt is too large for CLI stdin and temp-file prompting is disabled for this call')
   }
 
   registerExitHandler()

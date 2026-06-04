@@ -5,6 +5,14 @@ import { withRetry } from '../utils/retry.js'
 
 export class OpenAIProvider implements AIProvider {
   name = 'openai'
+  capabilities = {
+    canReadRepo: false,
+    canUseTools: false,
+    canDisableTools: false,
+    supportsStreaming: true,
+    supportsAbort: true,
+    supportsSession: false,
+  }
   private client: OpenAI
   private model: string
 

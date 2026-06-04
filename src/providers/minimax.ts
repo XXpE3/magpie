@@ -9,6 +9,14 @@ import { notifyProviderActivity } from './types.js'
  */
 export class MiniMaxProvider implements AIProvider {
   name = 'minimax'
+  capabilities = {
+    canReadRepo: false,
+    canUseTools: false,
+    canDisableTools: false,
+    supportsStreaming: true,
+    supportsAbort: true,
+    supportsSession: true,
+  }
   private apiKey: string
   private model: string
   private baseUrl: string

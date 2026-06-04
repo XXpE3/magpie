@@ -30,6 +30,14 @@ function getDelay(): number {
 
 export class MockProvider implements AIProvider {
   name = 'mock'
+  capabilities = {
+    canReadRepo: false,
+    canUseTools: false,
+    canDisableTools: false,
+    supportsStreaming: true,
+    supportsAbort: false,
+    supportsSession: false,
+  }
 
   async chat(messages: Message[], _systemPrompt?: string): Promise<string> {
     return getResponse(messages)

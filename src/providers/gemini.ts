@@ -5,6 +5,14 @@ import { withRetry } from '../utils/retry.js'
 
 export class GeminiProvider implements AIProvider {
   name = 'gemini'
+  capabilities = {
+    canReadRepo: false,
+    canUseTools: false,
+    canDisableTools: false,
+    supportsStreaming: true,
+    supportsAbort: true,
+    supportsSession: false,
+  }
   private client: GoogleGenerativeAI
   private model: string
   private requestOptions?: { baseUrl: string }

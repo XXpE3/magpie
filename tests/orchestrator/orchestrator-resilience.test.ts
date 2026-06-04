@@ -3,9 +3,19 @@ import { DebateOrchestrator } from '../../src/orchestrator/orchestrator.js'
 import type { AIProvider } from '../../src/providers/types.js'
 import type { Reviewer } from '../../src/orchestrator/types.js'
 
+const testCapabilities = {
+  canReadRepo: false,
+  canUseTools: false,
+  canDisableTools: false,
+  supportsStreaming: true,
+  supportsAbort: false,
+  supportsSession: false,
+}
+
 function makeProvider(name: string, response: string): AIProvider {
   return {
     name,
+    capabilities: testCapabilities,
     async chat() { return response },
     async *chatStream() { yield response },
   }
@@ -14,6 +24,7 @@ function makeProvider(name: string, response: string): AIProvider {
 function makeFailingProvider(name: string): AIProvider {
   return {
     name,
+    capabilities: testCapabilities,
     async chat() { throw new Error(`${name} crashed`) },
     async *chatStream() { throw new Error(`${name} crashed`) },
   }

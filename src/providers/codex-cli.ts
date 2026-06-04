@@ -1,14 +1,22 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, CliProviderOptions, ChatStreamOptions } from './types.js'
+import type { AIProvider, Message, CliProviderOptions, ChatOptions, ChatStreamOptions } from './types.js'
 import { notifyProviderActivity } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
-import { terminateProcess } from './process-control.js'
+import { runCliProcess, terminateProcess } from './process-control.js'
 import { logger } from '../utils/logger.js'
 
 export class CodexCliProvider implements AIProvider {
   name = 'codex-cli'
+  capabilities = {
+    canReadRepo: true,
+    canUseTools: true,
+    canDisableTools: false,
+    supportsStreaming: true,
+    supportsAbort: true,
+    supportsSession: true,
+  }
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private cliModel?: string
@@ -52,12 +60,12 @@ export class CodexCliProvider implements AIProvider {
     this.session.end()
   }
 
-  async chat(messages: Message[], systemPrompt?: string): Promise<string> {
+  async chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string> {
     const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
       ? this.session.buildPromptLastOnly(messages)
       : this.session.buildPrompt(messages, systemPrompt)
     try {
-      const result = await withRetry(() => this.runCodex(prompt))
+      const result = await withRetry(() => this.runCodex(prompt, options))
       this.session.markMessageSent()
       return result
     } catch (err) {
@@ -123,51 +131,20 @@ export class CodexCliProvider implements AIProvider {
     return text
   }
 
-  private runCodex(prompt: string): Promise<string> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+  private runCodex(prompt: string, options?: ChatOptions): Promise<string> {
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !this.capabilities.canDisableTools || !options?.disableTools })
 
-    return new Promise((resolve, reject) => {
-      const args = this.buildArgs()
-      const child = spawn('codex', args, {
-        cwd: this.cwd,
-        stdio: ['pipe', 'pipe', 'pipe']
-      })
-
-      let output = ''
-      let error = ''
-
-      child.stdout.on('data', (data) => {
-        output += data.toString()
-      })
-
-      child.stderr.on('data', (data) => {
-        error += data.toString()
-      })
-
-      child.on('close', (code) => {
-        cleanup()
-        if (code !== 0) {
-          reject(new Error(`Codex CLI exited with code ${code}: ${error}`))
-        } else {
-          resolve(this.parseJsonlOutput(output))
-        }
-      })
-
-      child.on('error', (err) => {
-        cleanup()
-        reject(new Error(`Failed to run codex CLI: ${err.message}`))
-      })
-
-      // Write prompt to stdin and close
-      // Suppress EPIPE: if child exits early, close handler reports the real error
-      child.stdin.on('error', () => {})
-      child.stdin.write(stdinPrompt)
-      child.stdin.end()
-    })
+    return runCliProcess({
+      command: 'codex',
+      args: this.buildArgs(),
+      cwd: this.cwd,
+      stdin: stdinPrompt,
+      timeoutMs: this.timeout,
+    }).then(({ stdout }) => this.parseJsonlOutput(stdout)).finally(cleanup)
   }
 
   private async *runCodexStream(prompt: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !this.capabilities.canDisableTools || !options?.disableTools })
 
     const args = this.buildArgs()
     const child = spawn('codex', args, {

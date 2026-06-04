@@ -4,10 +4,20 @@ import { DebateOrchestrator } from '../../src/orchestrator/orchestrator'
 import type { AIProvider } from '../../src/providers/types'
 import type { Reviewer } from '../../src/orchestrator/types'
 
+const testCapabilities = {
+  canReadRepo: false,
+  canUseTools: false,
+  canDisableTools: false,
+  supportsStreaming: true,
+  supportsAbort: false,
+  supportsSession: false,
+}
+
 const createMockProvider = (name: string, responses: string[]): AIProvider => {
   let callCount = 0
   return {
     name,
+    capabilities: testCapabilities,
     chat: vi.fn().mockImplementation(async () => responses[callCount++] || 'default'),
     chatStream: vi.fn().mockImplementation(async function* () {
       yield responses[callCount++] || 'default'
@@ -57,22 +67,22 @@ describe('DebateOrchestrator', () => {
     const mockChat = vi.fn().mockResolvedValue('response')
     const reviewerA: Reviewer = {
       id: 'reviewer-1',
-      provider: { name: 'a', chat: mockChat, chatStream: vi.fn() },
+      provider: { name: 'a', capabilities: testCapabilities, chat: mockChat, chatStream: vi.fn() },
       systemPrompt: 'You are A'
     }
     const reviewerB: Reviewer = {
       id: 'reviewer-2',
-      provider: { name: 'b', chat: vi.fn().mockResolvedValue('B response'), chatStream: vi.fn() },
+      provider: { name: 'b', capabilities: testCapabilities, chat: vi.fn().mockResolvedValue('B response'), chatStream: vi.fn() },
       systemPrompt: 'You are B'
     }
     const summarizer: Reviewer = {
       id: 'summarizer',
-      provider: { name: 's', chat: vi.fn().mockResolvedValue('summary'), chatStream: vi.fn() },
+      provider: { name: 's', capabilities: testCapabilities, chat: vi.fn().mockResolvedValue('summary'), chatStream: vi.fn() },
       systemPrompt: 'Summarize'
     }
     const analyzer: Reviewer = {
       id: 'analyzer',
-      provider: { name: 'analyzer', chat: vi.fn().mockResolvedValue('analysis'), chatStream: vi.fn() },
+      provider: { name: 'analyzer', capabilities: testCapabilities, chat: vi.fn().mockResolvedValue('analysis'), chatStream: vi.fn() },
       systemPrompt: 'Analyze'
     }
 
