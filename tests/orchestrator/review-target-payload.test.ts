@@ -81,14 +81,59 @@ describe('ReviewTargetPayload', () => {
       repoRoot: '/repo',
       prNumber: '42',
       prUrl: 'https://github.com/acme/repo/pull/42',
+      prTitle: 'Fix checkout total',
+      prBody: 'This PR changes how discounts are applied.',
       diff: 'diff --git a/src/a.ts b/src/a.ts\n+export const a = 1',
       cliCanFetchPr: false,
     }
 
     const prompt = selectReviewPrompt(buildReviewTargetPayload(target), cliCapabilities)
 
+    expect(prompt).toContain('Title: Fix checkout total')
+    expect(prompt).toContain('Description:\nThis PR changes how discounts are applied.')
     expect(prompt).toContain('```diff\ndiff --git a/src/a.ts b/src/a.ts\n+export const a = 1\n```')
     expect(prompt).toContain('You already have the complete diff above')
+  })
+
+  it('falls back to tool-fetch prompt for CLI providers when PR diff is unavailable', () => {
+    const target: ReviewTarget = {
+      kind: 'pr',
+      label: 'PR #42',
+      repoRoot: '/repo',
+      prNumber: '42',
+      prUrl: 'https://github.com/acme/repo/pull/42',
+      prTitle: 'Fix checkout total',
+      prBody: 'This PR changes how discounts are applied.',
+      diff: '',
+      cliCanFetchPr: false,
+    }
+
+    const prompt = selectReviewPrompt(buildReviewTargetPayload(target), cliCapabilities)
+
+    expect(prompt).toContain('Title: Fix checkout total')
+    expect(prompt).toContain('Description:\nThis PR changes how discounts are applied.')
+    expect(prompt).toContain('Use your repository tools to inspect the changed files')
+    expect(prompt).not.toContain('You already have the complete diff above')
+    expect(prompt).not.toContain('Diff was not available')
+  })
+
+  it('includes PR title and description in API prompts', () => {
+    const target: ReviewTarget = {
+      kind: 'pr',
+      label: 'PR #42',
+      repoRoot: '/repo',
+      prNumber: '42',
+      prUrl: 'https://github.com/acme/repo/pull/42',
+      prTitle: 'Fix checkout total',
+      prBody: 'This PR changes how discounts are applied.',
+      diff: 'diff --git a/src/a.ts b/src/a.ts\n+export const a = 1',
+    }
+
+    const prompt = selectReviewPrompt(buildReviewTargetPayload(target), apiCapabilities)
+
+    expect(prompt).toContain('Title: Fix checkout total')
+    expect(prompt).toContain('Description:\nThis PR changes how discounts are applied.')
+    expect(prompt).toContain('```diff\ndiff --git a/src/a.ts b/src/a.ts\n+export const a = 1\n```')
   })
 
   it('includes large PR truncation notice in prompts that embed diff', () => {

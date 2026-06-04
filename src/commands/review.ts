@@ -294,11 +294,13 @@ export const reviewCommand = new Command('review')
 
         // Fetch PR metadata. Base branch comes from GitHub instead of a hard-coded default.
         let prTitle = ''
+        let prBody = ''
         let baseBranch: string | undefined
         let headSha: string | undefined
         try {
-          const prInfo = JSON.parse(runGh(['pr', 'view', prUrl, '--json', 'title,baseRefName,headRefOid'], { timeout: 30000 }))
+          const prInfo = JSON.parse(runGh(['pr', 'view', prUrl, '--json', 'title,body,baseRefName,headRefOid'], { timeout: 30000 }))
           prTitle = prInfo.title || ''
+          prBody = prInfo.body || ''
           baseBranch = prInfo.baseRefName || undefined
           headSha = prInfo.headRefOid || undefined
         } catch {
@@ -358,6 +360,8 @@ export const reviewCommand = new Command('review')
           repo: prRepo,
           prNumber,
           prUrl,
+          prTitle,
+          prBody,
           baseBranch,
           headSha,
           diff: prDiff,

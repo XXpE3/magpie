@@ -133,6 +133,17 @@ function targetHeader(target: ReviewTarget): string {
   return 'Please review the local code changes.'
 }
 
+function formatPrMetadata(target: ReviewTarget): string {
+  const sections: string[] = []
+  if (target.prTitle?.trim()) {
+    sections.push(`Title: ${target.prTitle}`)
+  }
+  if (target.prBody?.trim()) {
+    sections.push(`Description:\n${target.prBody}`)
+  }
+  return sections.join('\n\n')
+}
+
 function formatDiffSection(diff: string | undefined, notice?: string): string {
   if (!diff?.trim()) {
     return 'Diff was not available. Report this clearly instead of guessing from missing changes.'
@@ -160,10 +171,16 @@ export function buildReviewTargetPayload(target: ReviewTarget, fallbackPrompt = 
   let promptForApi = ''
 
   if (target.kind === 'pr') {
-    promptForCli = target.cliCanFetchPr === false
-      ? `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not attempt to fetch it again.`
+    const metadata = formatPrMetadata(target)
+    const metadataSection = metadata ? `\n\n${metadata}` : ''
+    const hasDiff = Boolean(target.diff?.trim())
+    promptForCli = target.cliCanFetchPr === false && hasDiff
+      ? `${header}${metadataSection}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not attempt to fetch it again.`
       : `${header}\n\nUse your repository tools to inspect the changed files and relevant context. Review every changed file and function systematically.`
-    promptForApi = `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback.`
+    if (target.cliCanFetchPr !== false || !hasDiff) {
+      promptForCli = `${header}${metadataSection}\n\nUse your repository tools to inspect the changed files and relevant context. Review every changed file and function systematically.`
+    }
+    promptForApi = `${header}${metadataSection}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback.`
   } else if (target.kind === 'branch') {
     promptForCli = `${header}\n\nUse git and file-reading tools from ${target.repoRoot} to inspect the branch diff and source context.`
     promptForApi = `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not attempt to fetch it again.`

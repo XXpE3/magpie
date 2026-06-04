@@ -18,6 +18,8 @@ export interface ReviewTarget {
   repo?: string
   prNumber?: string
   prUrl?: string
+  prTitle?: string
+  prBody?: string
   baseBranch?: string
   headSha?: string
   diff?: string
