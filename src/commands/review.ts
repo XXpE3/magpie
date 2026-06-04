@@ -355,7 +355,7 @@ export const reviewCommand = new Command('review')
 
         target = {
           kind: 'pr',
-          label: prTitle ? `PR #${prNumber}: ${prTitle}` : `PR #${prNumber}`,
+          label: `PR #${prNumber}`,
           repoRoot,
           repo: prRepo,
           prNumber,
