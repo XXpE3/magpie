@@ -7,6 +7,7 @@ This project is indexed by GitNexus as **magpie** (2250 symbols, 4827 relationsh
 
 ## Always Do
 
+- **永远不要创建草稿！** 创建 PR 时必须直接创建可审查 PR，确保审查机器人能立即评论。
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
 - **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
