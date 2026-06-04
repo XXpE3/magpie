@@ -71,7 +71,7 @@ export class QwenCodeProvider implements AIProvider {
   }
 
   private runQwen(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !this.capabilities.canDisableTools || !options?.disableTools })
     // qwen -p - reads from stdin; -y auto-approves; text output
     // Limit session turns to prevent autonomous tool abuse (e.g., fetching GitHub data that leaks revert info)
     const args = ['-p', '-', '-y', '--max-session-turns', '5', '--output-format', 'text']
@@ -92,7 +92,7 @@ export class QwenCodeProvider implements AIProvider {
   }
 
   private async *runQwenStream(prompt: string, systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !this.capabilities.canDisableTools || !options?.disableTools })
 
     // Limit session turns to prevent autonomous tool abuse
     const args = ['-p', '-', '-y', '--max-session-turns', '5', '--output-format', 'text']

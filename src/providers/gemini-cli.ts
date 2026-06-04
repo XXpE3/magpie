@@ -75,7 +75,7 @@ export class GeminiCliProvider implements AIProvider {
   }
 
   private runGemini(prompt: string, options?: ChatOptions): Promise<string> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !this.capabilities.canDisableTools || !options?.disableTools })
     const args = ['-y', '-o', 'json', '-p', '-']
     if (this.cliModel) {
       args.push('--model', this.cliModel)
@@ -104,7 +104,7 @@ export class GeminiCliProvider implements AIProvider {
   }
 
   private async *runGeminiStream(prompt: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !this.capabilities.canDisableTools || !options?.disableTools })
 
     const args = ['-y', '-o', 'stream-json', '-p', '-']
     if (this.cliModel) {

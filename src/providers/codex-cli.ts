@@ -132,7 +132,7 @@ export class CodexCliProvider implements AIProvider {
   }
 
   private runCodex(prompt: string, options?: ChatOptions): Promise<string> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !this.capabilities.canDisableTools || !options?.disableTools })
 
     return runCliProcess({
       command: 'codex',
@@ -144,7 +144,7 @@ export class CodexCliProvider implements AIProvider {
   }
 
   private async *runCodexStream(prompt: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !this.capabilities.canDisableTools || !options?.disableTools })
 
     const args = this.buildArgs()
     const child = spawn('codex', args, {
