@@ -5,12 +5,25 @@ import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
 import { terminateProcess } from './process-control.js'
+import { logger } from '../utils/logger.js'
+
+const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob']
+const NETWORK_READ_ONLY_BASH_TOOLS = [
+  'Bash(gh pr view *)',
+  'Bash(gh pr diff *)',
+]
+const WRITE_TOOLS = ['Edit', 'MultiEdit', 'Write']
+const NETWORK_TOOLS = ['WebFetch', 'WebSearch']
 
 export class ClaudeCodeProvider implements AIProvider {
   name = 'claude-code'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private cliModel?: string
+  private allowDangerousBypass: boolean
+  private allowWrite: boolean
+  private allowNetwork: boolean
+  private extraAllowedTools: string[]
   private session = new CliSessionHelper()
 
   get sessionId() { return this.session.sessionId }
@@ -21,6 +34,13 @@ export class ClaudeCodeProvider implements AIProvider {
     this.cwd = process.cwd()
     this.timeout = 15 * 60 * 1000  // 15 minutes default
     this.cliModel = options?.cliModel
+    this.allowDangerousBypass = options?.cliSecurity?.allowDangerousBypass === true
+    this.allowWrite = options?.cliSecurity?.allowWrite === true
+    this.allowNetwork = options?.cliSecurity?.allowNetwork === true
+    this.extraAllowedTools = options?.cliSecurity?.extraAllowedTools || []
+    if (this.allowDangerousBypass) {
+      logger.warn('Dangerous Claude Code mode is enabled; reviewers may execute commands or modify files.')
+    }
   }
 
   setCwd(cwd: string) {
@@ -71,21 +91,67 @@ export class ClaudeCodeProvider implements AIProvider {
     return env
   }
 
+  private buildAvailableTools(): string[] {
+    const tools = new Set(READ_ONLY_TOOLS)
+    if (this.allowWrite) {
+      for (const tool of WRITE_TOOLS) tools.add(tool)
+    }
+    if (this.allowNetwork) {
+      tools.add('Bash')
+      for (const tool of NETWORK_TOOLS) tools.add(tool)
+    }
+    for (const tool of this.extraAllowedTools) {
+      const trimmed = tool.trim()
+      const toolName = trimmed.split('(', 1)[0]
+      if (toolName) tools.add(toolName)
+    }
+    return [...tools]
+  }
+
+  private buildAllowedTools(): string[] {
+    const tools = new Set(READ_ONLY_TOOLS)
+    if (this.allowWrite) {
+      for (const tool of WRITE_TOOLS) tools.add(tool)
+    }
+    if (this.allowNetwork) {
+      for (const tool of NETWORK_TOOLS) tools.add(tool)
+      for (const tool of NETWORK_READ_ONLY_BASH_TOOLS) tools.add(tool)
+    }
+    for (const tool of this.extraAllowedTools) {
+      const trimmed = tool.trim()
+      if (trimmed) tools.add(trimmed)
+    }
+    return [...tools]
+  }
+
+  private buildArgs(stream: boolean, disableTools?: boolean): string[] {
+    const args = ['-p', '-']
+    if (this.allowDangerousBypass) {
+      args.push('--dangerously-skip-permissions')
+    }
+    if (this.cliModel) {
+      args.push('--model', this.cliModel)
+    }
+    if (!this.allowDangerousBypass) {
+      args.push('--permission-mode', 'dontAsk')
+    }
+    if (disableTools) {
+      args.push('--tools', '')
+    } else if (!this.allowDangerousBypass) {
+      args.push('--tools', this.buildAvailableTools().join(','))
+      args.push('--allowedTools', this.buildAllowedTools().join(','))
+    }
+    if (stream) {
+      args.push('--output-format', 'stream-json', '--verbose')
+    }
+    return args
+  }
+
   private runClaude(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {
     const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
 
     return new Promise((resolve, reject) => {
-      // Build args based on session state
-      // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
-      const args = ['-p', '-', '--dangerously-skip-permissions']
-      if (this.cliModel) {
-        args.push('--model', this.cliModel)
-      }
-      // Disable all tools for pure text extraction (e.g., JSON structurization)
-      // Without this, Claude may use Edit/Write to modify files instead of outputting text
-      if (options?.disableTools) {
-        args.push('--tools', '')
-      }
+      const args = this.buildArgs(false, options?.disableTools)
       if (this.session.sessionId) {
         if (this.session.isFirstMessage) {
           args.push('--session-id', this.session.sessionId)
@@ -139,15 +205,10 @@ export class ClaudeCodeProvider implements AIProvider {
   private async *runClaudeStream(prompt: string, systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
     const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
 
-    // Build args based on session state
-    // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
     // Use --output-format stream-json --verbose so that tool activity (Read, Bash, etc.)
     // produces stdout events, preventing the inactivity timeout from killing Claude
     // while it's actively investigating code.
-    const args = ['-p', '-', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose']
-    if (this.cliModel) {
-      args.push('--model', this.cliModel)
-    }
+    const args = this.buildArgs(true, options?.disableTools)
     if (this.session.sessionId) {
       if (this.session.isFirstMessage) {
         args.push('--session-id', this.session.sessionId)

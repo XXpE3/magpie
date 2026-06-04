@@ -67,6 +67,48 @@ contextGatherer:
       expect(config.contextGatherer?.provider).toBe('anthropic')
     })
 
+    it('should apply readonly CLI defaults to legacy provider config', () => {
+      const configPath = join(testDir, 'config.yaml')
+      writeFileSync(configPath, `
+providers:
+  claude-code:
+    enabled: true
+  codexAlias:
+    type: codex-cli
+defaults:
+  max_rounds: 3
+  output_format: markdown
+reviewers:
+  claude-code:
+    model: claude-code
+    provider: claude-code
+    prompt: Test prompt
+  codex:
+    model: codex-cli
+    provider: codexAlias
+    prompt: Test prompt
+summarizer:
+  model: claude-code
+  provider: claude-code
+  prompt: Summarizer prompt
+analyzer:
+  model: claude-code
+  provider: claude-code
+  prompt: Analyzer prompt
+`)
+
+      const config = loadConfig(configPath)
+
+      expect(config.providers['claude-code']?.allowDangerousBypass).toBe(false)
+      expect(config.providers['claude-code']?.allowWrite).toBe(false)
+      expect(config.providers['claude-code']?.allowNetwork).toBe(false)
+      expect(config.providers['claude-code']?.extraAllowedTools).toEqual([])
+      expect(config.providers.codexAlias?.allowDangerousBypass).toBe(false)
+      expect(config.providers.codexAlias?.allowWrite).toBe(false)
+      expect(config.providers.codexAlias?.allowNetwork).toBe(false)
+      expect(config.providers.codexAlias?.extraAllowedTools).toEqual([])
+    })
+
     it('should load shared reviewer prompt from prompt.txt when reviewer prompt is omitted', () => {
       const configPath = join(testDir, 'config.yaml')
       const promptPath = join(testDir, 'prompt.txt')

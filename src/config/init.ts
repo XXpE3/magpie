@@ -126,6 +126,8 @@ export function generateConfig(selectedReviewerIds: string[]): string {
   const needsOpenai = selectedReviewers.some(r => r.provider === 'openai')
   const needsGoogle = selectedReviewers.some(r => r.provider === 'google')
   const needsOllama = selectedReviewers.some(r => r.provider === 'ollama')
+  const needsClaudeCode = selectedReviewers.some(r => r.provider === 'claude-code')
+  const needsCodexCli = selectedReviewers.some(r => r.provider === 'codex-cli')
 
   // Build providers section
   let providersSection = '# AI Provider API Keys (use environment variables)\nproviders:'
@@ -150,8 +152,26 @@ export function generateConfig(selectedReviewerIds: string[]): string {
     base_url: http://localhost:11434
     # api_key: \${OLLAMA_API_KEY}`
   }
-  if (!needsAnthropic && !needsOpenai && !needsGoogle && !needsOllama) {
-    providersSection += ' {}'  // Empty providers if only CLI tools are used
+  if (needsClaudeCode) {
+    providersSection += `
+  claude-code:
+    enabled: true
+    allowDangerousBypass: false
+    allowWrite: false
+    allowNetwork: false
+    extraAllowedTools: []`
+  }
+  if (needsCodexCli) {
+    providersSection += `
+  codex-cli:
+    enabled: true
+    allowDangerousBypass: false
+    allowWrite: false
+    allowNetwork: false
+    extraAllowedTools: []`
+  }
+  if (!needsAnthropic && !needsOpenai && !needsGoogle && !needsOllama && !needsClaudeCode && !needsCodexCli) {
+    providersSection += ' {}'  // Empty providers if selected reviewers do not need config
   }
 
   // Build reviewers section

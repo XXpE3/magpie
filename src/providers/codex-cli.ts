@@ -5,12 +5,16 @@ import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
 import { terminateProcess } from './process-control.js'
+import { logger } from '../utils/logger.js'
 
 export class CodexCliProvider implements AIProvider {
   name = 'codex-cli'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private cliModel?: string
+  private allowDangerousBypass: boolean
+  private allowWrite: boolean
+  private allowNetwork: boolean
   private session = new CliSessionHelper()
   // Codex gets its session ID from the first response (thread_id in JSONL)
   private sessionEnabled = false
@@ -22,6 +26,15 @@ export class CodexCliProvider implements AIProvider {
     this.cwd = process.cwd()
     this.timeout = 15 * 60 * 1000  // 15 minutes default
     this.cliModel = options?.cliModel
+    this.allowDangerousBypass = options?.cliSecurity?.allowDangerousBypass === true
+    this.allowWrite = options?.cliSecurity?.allowWrite === true
+    this.allowNetwork = options?.cliSecurity?.allowNetwork === true
+    if (this.allowNetwork && !this.allowWrite && !this.allowDangerousBypass) {
+      throw new Error('Codex CLI allowNetwork requires allowWrite because Codex exposes shell network access through the workspace-write sandbox.')
+    }
+    if (this.allowDangerousBypass) {
+      logger.warn('Dangerous Codex CLI mode is enabled; reviewers may execute commands or modify files.')
+    }
   }
 
   setCwd(cwd: string) {
@@ -67,16 +80,27 @@ export class CodexCliProvider implements AIProvider {
   }
 
   private buildArgs(): string[] {
-    const baseArgs = ['--json', '--dangerously-bypass-approvals-and-sandbox']
-    if (this.cliModel) {
-      baseArgs.push('--model', this.cliModel)
+    const rootArgs = this.allowNetwork ? ['--search'] : []
+    const execArgs: string[] = []
+    if (this.allowNetwork) {
+      execArgs.push('-c', 'sandbox_workspace_write.network_access=true')
     }
+    if (this.allowDangerousBypass) {
+      execArgs.push('--dangerously-bypass-approvals-and-sandbox')
+    } else {
+      execArgs.push('--sandbox', this.allowWrite ? 'workspace-write' : 'read-only')
+      execArgs.push('-c', 'approval_policy=never')
+    }
+    if (this.cliModel) {
+      execArgs.push('--model', this.cliModel)
+    }
+    execArgs.push('--json')
     if (this.sessionEnabled && this.sessionId) {
       // Resume existing session
-      return ['exec', 'resume', this.sessionId, ...baseArgs, '-']
+      return [...rootArgs, 'exec', ...execArgs, 'resume', this.sessionId, '-']
     }
     // New session or no session
-    return ['exec', ...baseArgs, '-']
+    return [...rootArgs, 'exec', ...execArgs, '-']
   }
 
   // Parse JSONL output: extract thread_id and agent_message text

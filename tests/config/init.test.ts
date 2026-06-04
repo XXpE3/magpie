@@ -39,6 +39,14 @@ describe('generateConfig', () => {
     expect(config).not.toContain('model: gpt-5.5\n    provider: codex-cli')
   })
 
+  it('should generate readonly CLI provider safety defaults', () => {
+    const config = generateConfig(['claude-code', 'codex-cli'])
+
+    expect(config).toContain('claude-code:\n    enabled: true\n    allowDangerousBypass: false\n    allowWrite: false\n    allowNetwork: false\n    extraAllowedTools: []')
+    expect(config).toContain('codex-cli:\n    enabled: true\n    allowDangerousBypass: false\n    allowWrite: false\n    allowNetwork: false\n    extraAllowedTools: []')
+    expect(config).not.toContain('providers: {}')
+  })
+
   it('should not hardcode an Ollama api_key', () => {
     const config = generateConfig(['ollama-glm'])
 
