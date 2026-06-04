@@ -3,6 +3,34 @@ import type { AIProvider } from '../providers/types.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
 import type { StatusTracker } from '../status/tracker.js'
 
+export type ReviewTargetKind = 'pr' | 'local' | 'branch' | 'files'
+
+export interface ReviewTargetFile {
+  path: string
+  content?: string
+  error?: string
+}
+
+export interface ReviewTarget {
+  kind: ReviewTargetKind
+  label: string
+  repoRoot: string
+  repo?: string
+  prNumber?: string
+  prUrl?: string
+  baseBranch?: string
+  headSha?: string
+  diff?: string
+  files?: ReviewTargetFile[]
+}
+
+export interface ReviewTargetPayload {
+  promptForCli: string
+  promptForApi: string
+  diff?: string
+  files?: ReviewTargetFile[]
+}
+
 export interface Reviewer {
   id: string
   provider: AIProvider
