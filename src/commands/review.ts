@@ -1,7 +1,6 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
-import { execSync } from 'child_process'
 import { loadConfig } from '../config/loader.js'
 import { createProvider, isCliModel } from '../providers/factory.js'
 import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
@@ -20,6 +19,7 @@ import { filterDiff } from '../utils/diff-filter.js'
 import { fetchLargePRDiff } from '../utils/large-diff.js'
 import { requireSystemPrompt } from '../utils/prompt.js'
 import { StatusRenderer, StatusTracker } from '../status/index.js'
+import { parseGitHubPRUrl, runGh, runGit, validateGitHubRepo, validateGitRemoteName, validatePRNumber } from '../utils/command.js'
 
 // Configure marked to render for terminal
 marked.setOptions({
@@ -124,11 +124,11 @@ export const reviewCommand = new Command('review')
         spinner.text = 'Getting local changes...'
         try {
           // Get both staged and unstaged changes
-          const diff = filterDiff(execSync('git diff HEAD', { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
+          const diff = filterDiff(runGit(['diff', 'HEAD'], { maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
           if (!diff.trim()) {
             // No uncommitted changes, fall back to last commit
             spinner.text = 'No uncommitted changes, getting last commit...'
-            const lastCommitDiff = filterDiff(execSync('git diff HEAD~1 HEAD', { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
+            const lastCommitDiff = filterDiff(runGit(['diff', 'HEAD~1', 'HEAD'], { maxBuffer: 10 * 1024 * 1024 }), config.defaults.diff_exclude)
             if (!lastCommitDiff.trim()) {
               spinner.fail('No changes found')
               console.error(chalk.yellow('Tip: Make some changes or commits first, then run again.'))
@@ -136,7 +136,7 @@ export const reviewCommand = new Command('review')
             }
             localDiff = lastCommitDiff
             reviewingLastCommit = true
-            const commitMsg = execSync('git log -1 --pretty=%s', { encoding: 'utf-8' }).trim()
+            const commitMsg = runGit(['log', '-1', '--pretty=%s']).trim()
             spinner.succeed(`Reviewing last commit: "${commitMsg}" (${lastCommitDiff.split('\n').length} lines)`)
           } else {
             localDiff = diff
@@ -162,7 +162,7 @@ export const reviewCommand = new Command('review')
         }
       } else if (options.branch !== undefined) {
         const baseBranch = typeof options.branch === 'string' ? options.branch : 'main'
-        const currentBranch = execSync('git branch --show-current', { encoding: 'utf-8' }).trim()
+        const currentBranch = runGit(['branch', '--show-current']).trim()
         target = {
           type: 'branch',
           label: `Branch: ${currentBranch}`,
@@ -183,43 +183,33 @@ export const reviewCommand = new Command('review')
 
         if (pr.startsWith('http')) {
           // Full URL provided
-          prUrl = pr
-          const match = pr.match(/\/pull\/(\d+)/)
-          prNumber = match ? match[1] : pr
-          // Extract repo from URL for cross-repo PR operations
-          const repoFromUrl = pr.match(/github\.com\/([^/]+\/[^/]+)\/pull\//)
-          if (repoFromUrl) prRepo = repoFromUrl[1]
+          const parsed = parseGitHubPRUrl(pr)
+          prUrl = parsed.url
+          prNumber = parsed.prNumber
+          prRepo = parsed.repo
         } else {
           // Just PR number, try to detect repo from git
-          prNumber = pr
-          const gitRemote = options.gitRemote || 'origin'
-          // Validate remote name to prevent command injection (alphanumeric, dash, underscore only)
-          if (!/^[a-zA-Z0-9_-]+$/.test(gitRemote)) {
-            throw new Error(`Invalid git remote name: ${gitRemote}`)
-          }
+          prNumber = validatePRNumber(pr)
+          const gitRemote = validateGitRemoteName(options.gitRemote || 'origin')
 
           // Use gh to resolve the actual PR URL (handles forks: finds PR on upstream repo)
           try {
-            const resolvedUrl = execSync(
-              `gh pr view ${prNumber} --json url --jq .url`,
-              { encoding: 'utf-8', timeout: 30000 }
-            ).trim()
-            const repoFromPR = resolvedUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\//)
-            if (repoFromPR) {
-              prRepo = repoFromPR[1]
-              prUrl = resolvedUrl
-            }
+            const resolvedUrl = runGh(['pr', 'view', prNumber, '--json', 'url', '--jq', '.url'], { timeout: 30000 }).trim()
+            const parsed = parseGitHubPRUrl(resolvedUrl)
+            prRepo = parsed.repo
+            prUrl = parsed.url
           } catch {
             // gh pr view failed — fall back to git remote detection
           }
 
           if (!prRepo) {
             try {
-              const remoteUrl = execSync(`git remote get-url ${gitRemote}`, { encoding: 'utf-8' }).trim()
+              const remoteUrl = runGit(['remote', 'get-url', gitRemote]).trim()
               // Convert git@github.com:org/repo.git or https://github.com/org/repo.git to https://github.com/org/repo
               const repoMatch = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
               if (repoMatch) {
-                prUrl = `https://github.com/${repoMatch[1]}/pull/${prNumber}`
+                const repo = validateGitHubRepo(repoMatch[1])
+                prUrl = `https://github.com/${repo}/pull/${prNumber}`
               } else {
                 prUrl = `PR #${prNumber}`  // Fallback
               }
@@ -233,7 +223,7 @@ export const reviewCommand = new Command('review')
         let prTitle = ''
         let prBody = ''
         try {
-          const prInfo = JSON.parse(execSync(`gh pr view ${prUrl} --json title,body`, { encoding: 'utf-8', timeout: 30000 }))
+          const prInfo = JSON.parse(runGh(['pr', 'view', prUrl, '--json', 'title,body'], { timeout: 30000 }))
           prTitle = prInfo.title || ''
           prBody = prInfo.body || ''
         } catch {
@@ -260,7 +250,7 @@ export const reviewCommand = new Command('review')
           let prDiff = ''
           let diffTruncationNote = ''
           try {
-            prDiff = execSync(`gh pr diff ${prUrl}`, { encoding: 'utf-8', timeout: 60000, maxBuffer: 10 * 1024 * 1024 })
+            prDiff = runGh(['pr', 'diff', prUrl], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 })
             const originalLines = prDiff.split('\n').length
             prDiff = filterDiff(prDiff, config.defaults.diff_exclude)
             const filteredLines = prDiff.split('\n').length
@@ -275,9 +265,9 @@ export const reviewCommand = new Command('review')
               console.log(chalk.yellow(`  PR diff too large for GitHub API, fetching via files API...`))
               try {
                 const repo = prRepo || (() => {
-                  const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf-8' }).trim()
+                  const remoteUrl = runGit(['remote', 'get-url', 'origin']).trim()
                   const m = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
-                  return m ? m[1] : ''
+                  return m ? validateGitHubRepo(m[1]) : ''
                 })()
                 if (repo) {
                   const result = fetchLargePRDiff(repo, prNumber, {

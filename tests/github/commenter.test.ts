@@ -2,30 +2,36 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { getPRHeadSha, classifyComments, postReview, parseDiffLines, findNearestLine, extractCodeFromBody, findLineByContent } from '../../src/github/commenter'
 
-// Mock child_process — all exported functions use execSync
+// Mock child_process — command helpers use execFileSync
 vi.mock('child_process', () => ({
-  execSync: vi.fn()
+  execFileSync: vi.fn()
 }))
 
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
+
+function commandText(args: unknown): string {
+  return Array.isArray(args) ? args.join(' ') : ''
+}
 
 beforeEach(() => {
   vi.resetAllMocks()
   // Default: getRepo returns a repo string
-  vi.mocked(execSync).mockImplementation((cmd: string) => {
-    if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+  vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+    const text = commandText(args)
+    if (cmd === 'git' && text.includes('remote get-url')) {
       return 'https://github.com/owner/repo.git'
     }
     return ''
-  })
+  }) as never)
 })
 
 describe('getPRHeadSha', () => {
   it('returns head SHA for valid PR number', () => {
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('headRefOid')) return 'abc123\n'
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'gh' && text.includes('headRefOid')) return 'abc123\n'
       return 'https://github.com/owner/repo.git'
-    })
+    }) as never)
     expect(getPRHeadSha('42')).toBe('abc123')
   })
 
@@ -40,18 +46,19 @@ describe('getPRHeadSha', () => {
 
 describe('classifyComments', () => {
   it('classifies inline comments when line is in diff', () => {
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
         return 'https://github.com/owner/repo.git'
       }
-      if (typeof cmd === 'string' && cmd.includes('/files')) {
+      if (cmd === 'gh' && text.includes('/files')) {
         return JSON.stringify([{
           filename: 'src/auth.ts',
           patch: '@@ -1,3 +1,5 @@\n context\n+added line 2\n+added line 3\n context\n context'
         }])
       }
       return ''
-    })
+    }) as never)
 
     const result = classifyComments('1', [
       { path: 'src/auth.ts', line: 2, body: 'issue here' }
@@ -61,18 +68,19 @@ describe('classifyComments', () => {
   })
 
   it('classifies file-level when line not in diff', () => {
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
         return 'https://github.com/owner/repo.git'
       }
-      if (typeof cmd === 'string' && cmd.includes('/files')) {
+      if (cmd === 'gh' && text.includes('/files')) {
         return JSON.stringify([{
           filename: 'src/auth.ts',
           patch: '@@ -1,3 +1,3 @@\n context\n-old\n+new\n context'
         }])
       }
       return ''
-    })
+    }) as never)
 
     const result = classifyComments('1', [
       { path: 'src/auth.ts', line: 999, body: 'not on diff' }
@@ -82,18 +90,19 @@ describe('classifyComments', () => {
   })
 
   it('classifies global when file not in diff', () => {
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
         return 'https://github.com/owner/repo.git'
       }
-      if (typeof cmd === 'string' && cmd.includes('/files')) {
+      if (cmd === 'gh' && text.includes('/files')) {
         return JSON.stringify([{
           filename: 'src/other.ts',
           patch: '@@ -1,3 +1,3 @@\n context'
         }])
       }
       return ''
-    })
+    }) as never)
 
     const result = classifyComments('1', [
       { path: 'src/missing.ts', line: 10, body: 'file not in PR' }
@@ -103,11 +112,12 @@ describe('classifyComments', () => {
   })
 
   it('reclassifies as inline with nearest diff line when exact line not found', () => {
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
         return 'https://github.com/owner/repo.git'
       }
-      if (typeof cmd === 'string' && cmd.includes('/files')) {
+      if (cmd === 'gh' && text.includes('/files')) {
         // Diff hunk covers lines 1-5
         return JSON.stringify([{
           filename: 'src/auth.ts',
@@ -115,7 +125,7 @@ describe('classifyComments', () => {
         }])
       }
       return ''
-    })
+    }) as never)
 
     const result = classifyComments('1', [
       { path: 'src/auth.ts', line: 7, body: 'issue near diff' }
@@ -128,11 +138,12 @@ describe('classifyComments', () => {
   })
 
   it('falls back to file mode when line is too far from diff', () => {
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
         return 'https://github.com/owner/repo.git'
       }
-      if (typeof cmd === 'string' && cmd.includes('/files')) {
+      if (cmd === 'gh' && text.includes('/files')) {
         // Diff hunk covers lines 1-3
         return JSON.stringify([{
           filename: 'src/auth.ts',
@@ -140,7 +151,7 @@ describe('classifyComments', () => {
         }])
       }
       return ''
-    })
+    }) as never)
 
     const result = classifyComments('1', [
       { path: 'src/auth.ts', line: 100, body: 'way too far' }
@@ -256,18 +267,19 @@ describe('postReview', () => {
   })
 
   it('posts inline comments via reviews API', () => {
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
         return 'https://github.com/owner/repo.git'
       }
-      if (typeof cmd === 'string' && cmd.includes('/comments --paginate')) {
+      if (cmd === 'gh' && text.includes('/comments --paginate')) {
         return ''
       }
-      if (typeof cmd === 'string' && cmd.includes('/reviews')) {
+      if (cmd === 'gh' && text.includes('/reviews')) {
         return '{}'
       }
       return ''
-    })
+    }) as never)
 
     const classified = [
       { input: { path: 'src/auth.ts', line: 10, body: 'fix this' }, mode: 'inline' as const }
@@ -279,15 +291,16 @@ describe('postReview', () => {
   })
 
   it('skips duplicate comments', () => {
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
         return 'https://github.com/owner/repo.git'
       }
-      if (typeof cmd === 'string' && cmd.includes('/comments --paginate')) {
+      if (cmd === 'gh' && text.includes('/comments --paginate')) {
         return '{"path":"src/auth.ts","line":10,"body":"fix this already posted"}'
       }
       return ''
-    })
+    }) as never)
 
     const classified = [
       { input: { path: 'src/auth.ts', line: 10, body: 'fix this already posted' }, mode: 'inline' as const }
@@ -298,15 +311,16 @@ describe('postReview', () => {
   })
 
   it('reports empty result when no comments', () => {
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
         return 'https://github.com/owner/repo.git'
       }
-      if (typeof cmd === 'string' && cmd.includes('/comments --paginate')) {
+      if (cmd === 'gh' && text.includes('/comments --paginate')) {
         return ''
       }
       return ''
-    })
+    }) as never)
 
     const result = postReview('1', [], 'SHA')
     expect(result.posted).toBe(0)

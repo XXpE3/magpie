@@ -1,5 +1,5 @@
 // src/github/commenter.ts
-import { execSync } from 'child_process'
+import { runGh, runGit, validateGitHubRepo, validatePRNumber } from '../utils/command.js'
 
 export interface CommentResult {
   success: boolean
@@ -33,18 +33,12 @@ export interface ReviewResult {
   }>
 }
 
-function validatePRNumber(prNumber: string): void {
-  if (!/^\d+$/.test(prNumber)) {
-    throw new Error(`Invalid PR number: ${prNumber}`)
-  }
-}
-
 function getRepo(repo?: string): string {
-  if (repo) return repo
-  const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf-8' }).trim()
+  if (repo) return validateGitHubRepo(repo)
+  const remoteUrl = runGit(['remote', 'get-url', 'origin']).trim()
   const repoMatch = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
   if (!repoMatch) throw new Error('Could not detect GitHub repo from git remote')
-  return repoMatch[1]
+  return validateGitHubRepo(repoMatch[1])
 }
 
 /**
@@ -52,11 +46,10 @@ function getRepo(repo?: string): string {
  */
 export function getPRHeadSha(prNumber: string, repo?: string): string {
   validatePRNumber(prNumber)
-  const repoFlag = repo ? ` --repo ${repo}` : ''
-  const result = execSync(
-    `gh pr view ${prNumber}${repoFlag} --json headRefOid --jq .headRefOid`,
-    { encoding: 'utf-8' }
-  )
+  const args = ['pr', 'view', prNumber]
+  if (repo) args.push('--repo', validateGitHubRepo(repo))
+  args.push('--json', 'headRefOid', '--jq', '.headRefOid')
+  const result = runGh(args)
   return result.trim()
 }
 
@@ -177,10 +170,7 @@ export function findLineByContent(patch: string, codeSnippet: string): number | 
  * Falls back to full diff when per-file patches are missing (large files).
  */
 function getDiffInfo(prNumber: string, repo: string): Map<string, Set<number>> {
-  const result = execSync(
-    `gh api repos/${repo}/pulls/${prNumber}/files --paginate`,
-    { encoding: 'utf-8' }
-  )
+  const result = runGh(['api', `repos/${repo}/pulls/${prNumber}/files`, '--paginate'])
   const files = JSON.parse(result)
   const diffInfo = new Map<string, Set<number>>()
   // Also store raw patches for content-based matching
@@ -200,9 +190,9 @@ function getDiffInfo(prNumber: string, repo: string): Map<string, Set<number>> {
   // Fallback: fetch full diff for files with missing patches (large files)
   if (hasNullPatch) {
     try {
-      const fullDiff = execSync(
-        `gh api repos/${repo}/pulls/${prNumber} -H "Accept: application/vnd.github.v3.diff"`,
-        { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
+      const fullDiff = runGh(
+        ['api', `repos/${repo}/pulls/${prNumber}`, '-H', 'Accept: application/vnd.github.v3.diff'],
+        { maxBuffer: 10 * 1024 * 1024 }
       )
       parseFullDiffInto(fullDiff, diffInfo, patchMap)
     } catch {
@@ -290,9 +280,9 @@ export function postComment(
         line: opts.line,
         side: 'RIGHT',
       })
-      execSync(
-        `gh api repos/${repo}/pulls/${prNumber}/comments --input -`,
-        { input: payload, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      runGh(
+        ['api', `repos/${repo}/pulls/${prNumber}/comments`, '--input', '-'],
+        { input: payload, stdio: ['pipe', 'pipe', 'pipe'] }
       )
       return { success: true, inline: true }
     } catch {
@@ -309,9 +299,9 @@ export function postComment(
       path: opts.path,
       subject_type: 'file',
     })
-    execSync(
-      `gh api repos/${repo}/pulls/${prNumber}/comments --input -`,
-      { input: payload, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    runGh(
+      ['api', `repos/${repo}/pulls/${prNumber}/comments`, '--input', '-'],
+      { input: payload, stdio: ['pipe', 'pipe', 'pipe'] }
     )
     return { success: true, inline: true }
   } catch {
@@ -321,11 +311,13 @@ export function postComment(
   // Last resort: regular PR comment
   const location = opts.line ? `**${opts.path}:${opts.line}**\n\n` : `**${opts.path}**\n\n`
   const body = location + opts.body
-  const repoFlag = opts.repo ? ` --repo ${opts.repo}` : ''
+  const args = ['pr', 'comment', prNumber]
+  if (opts.repo) args.push('--repo', validateGitHubRepo(opts.repo))
+  args.push('--body-file', '-')
   try {
-    execSync(
-      `gh pr comment ${prNumber}${repoFlag} --body-file -`,
-      { input: body, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    runGh(
+      args,
+      { input: body, stdio: ['pipe', 'pipe', 'pipe'] }
     )
     return { success: true, inline: false }
   } catch (e) {
@@ -409,9 +401,9 @@ function getExistingComments(prNumber: string, resolvedRepo: string): Array<{ pa
   try {
     // --jq '.[]' outputs one JSON object per line (NDJSON), which avoids
     // the "[...][...]" concatenation issue with --paginate + JSON arrays
-    const result = execSync(
-      `gh api repos/${resolvedRepo}/pulls/${prNumber}/comments --paginate --jq '.[]'`,
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    const result = runGh(
+      ['api', `repos/${resolvedRepo}/pulls/${prNumber}/comments`, '--paginate', '--jq', '.[]'],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
     )
     const lines = result.trim().split('\n').filter(Boolean)
     return lines.map(line => JSON.parse(line))
@@ -488,9 +480,9 @@ export function postReview(
         event: 'COMMENT',
         comments: reviewComments,
       })
-      execSync(
-        `gh api repos/${resolvedRepo}/pulls/${prNumber}/reviews --input -`,
-        { input: payload, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      runGh(
+        ['api', `repos/${resolvedRepo}/pulls/${prNumber}/reviews`, '--input', '-'],
+        { input: payload, stdio: ['pipe', 'pipe', 'pipe'] }
       )
       for (const idx of reviewDetailIndices) {
         details[idx].success = true
@@ -518,13 +510,15 @@ export function postReview(
   }
 
   // Post global comments
-  const repoFlag = repo ? ` --repo ${repo}` : ''
+  const globalCommentArgs = ['pr', 'comment', prNumber]
+  if (repo) globalCommentArgs.push('--repo', validateGitHubRepo(repo))
+  globalCommentArgs.push('--body-file', '-')
   for (const { input: c, detailIndex } of globalEntries) {
     const location = c.line ? `**${c.path}:${c.line}**\n\n` : `**${c.path}**\n\n`
     try {
-      execSync(
-        `gh pr comment ${prNumber}${repoFlag} --body-file -`,
-        { input: location + c.body, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      runGh(
+        globalCommentArgs,
+        { input: location + c.body, stdio: ['pipe', 'pipe', 'pipe'] }
       )
       details[detailIndex].success = true
     } catch {
