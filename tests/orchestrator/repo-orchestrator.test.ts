@@ -6,10 +6,20 @@ import type { Reviewer } from '../../src/orchestrator/types.js'
 import type { ReviewPlan, ReviewStep } from '../../src/planner/types.js'
 import type { FeaturePlan, FeatureStep } from '../../src/planner/feature-planner.js'
 
+const testCapabilities = {
+  canReadRepo: false,
+  canUseTools: false,
+  canDisableTools: false,
+  supportsStreaming: true,
+  supportsAbort: false,
+  supportsSession: false,
+}
+
 const createMockProvider = (responses: string[]): AIProvider => {
   let callCount = 0
   return {
     name: 'mock',
+    capabilities: testCapabilities,
     chat: vi.fn().mockImplementation(async () => responses[callCount++] || 'default'),
     chatStream: vi.fn().mockImplementation(async function* () {
       yield responses[callCount++] || 'default'
@@ -177,6 +187,8 @@ describe('RepoOrchestrator', () => {
 
 describe('RepoOrchestrator - Feature Based', () => {
   const mockProvider = {
+    name: 'mock',
+    capabilities: testCapabilities,
     chat: vi.fn().mockResolvedValue('ISSUE: [test.ts:10] - [test issue] - [severity: medium]')
   }
 

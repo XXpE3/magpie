@@ -5,10 +5,18 @@ import { CliSessionHelper } from './session-helper.js'
 import { logger } from '../utils/logger.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
-import { terminateProcess } from './process-control.js'
+import { runCliProcess, terminateProcess } from './process-control.js'
 
 export class QwenCodeProvider implements AIProvider {
   name = 'qwen-code'
+  capabilities = {
+    canReadRepo: true,
+    canUseTools: true,
+    canDisableTools: false,
+    supportsStreaming: true,
+    supportsAbort: true,
+    supportsSession: true,
+  }
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private cliModel?: string
@@ -63,56 +71,28 @@ export class QwenCodeProvider implements AIProvider {
   }
 
   private runQwen(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
+    // qwen -p - reads from stdin; -y auto-approves; text output
+    // Limit session turns to prevent autonomous tool abuse (e.g., fetching GitHub data that leaks revert info)
+    const args = ['-p', '-', '-y', '--max-session-turns', '5', '--output-format', 'text']
+    if (this.cliModel) {
+      args.push('--model', this.cliModel)
+    }
 
-    return new Promise((resolve, reject) => {
-      // qwen -p - reads from stdin; -y auto-approves; text output
-      // Limit session turns to prevent autonomous tool abuse (e.g., fetching GitHub data that leaks revert info)
-      const args = ['-p', '-', '-y', '--max-session-turns', '5', '--output-format', 'text']
-      if (this.cliModel) {
-        args.push('--model', this.cliModel)
-      }
-      const child = spawn('qwen', args, {
-        cwd: this.cwd,
-        stdio: ['pipe', 'pipe', 'pipe']
-      })
-
-      let output = ''
-      let error = ''
-
-      child.stdout.on('data', (data) => {
-        output += data.toString()
-      })
-
-      child.stderr.on('data', (data) => {
-        error += data.toString()
-      })
-
-      child.on('close', (code) => {
-        cleanup()
-        if (code !== 0) {
-          logger.debug(`[qwen-code] exit=${code} stderr=${error.slice(0, 500)}`)
-          reject(new Error(`Qwen CLI exited with code ${code}: ${error}`))
-        } else {
-          resolve(output.trim())
-        }
-      })
-
-      child.on('error', (err) => {
-        cleanup()
-        reject(new Error(`Failed to run qwen CLI: ${err.message}`))
-      })
-
-      // Write prompt to stdin and close
-      // Suppress EPIPE: if child exits early, close handler reports the real error
-      child.stdin.on('error', () => {})
-      child.stdin.write(stdinPrompt)
-      child.stdin.end()
-    })
+    return runCliProcess({
+      command: 'qwen',
+      args,
+      cwd: this.cwd,
+      stdin: stdinPrompt,
+      timeoutMs: this.timeout,
+    }).then(({ stdout }) => stdout.trim()).catch((err) => {
+      logger.debug(`[qwen-code] ${err.message}`)
+      throw err
+    }).finally(cleanup)
   }
 
   private async *runQwenStream(prompt: string, systemPrompt?: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
 
     // Limit session turns to prevent autonomous tool abuse
     const args = ['-p', '-', '-y', '--max-session-turns', '5', '--output-format', 'text']

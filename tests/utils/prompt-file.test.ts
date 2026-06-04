@@ -23,4 +23,11 @@ describe('preparePromptForCli', () => {
     result.cleanup()
     expect(existsSync(tmpPath)).toBe(false)
   })
+
+  it('should reject large prompts when temp file prompting is disabled', () => {
+    const largePrompt = 'x'.repeat(200 * 1024)
+
+    expect(() => preparePromptForCli(largePrompt, { allowTempFile: false }))
+      .toThrow('Prompt is too large for CLI stdin')
+  })
 })

@@ -1,13 +1,21 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, CliProviderOptions, ChatStreamOptions } from './types.js'
+import type { AIProvider, Message, CliProviderOptions, ChatOptions, ChatStreamOptions } from './types.js'
 import { notifyProviderActivity } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
-import { terminateProcess } from './process-control.js'
+import { runCliProcess, terminateProcess } from './process-control.js'
 
 export class GeminiCliProvider implements AIProvider {
   name = 'gemini-cli'
+  capabilities = {
+    canReadRepo: true,
+    canUseTools: true,
+    canDisableTools: false,
+    supportsStreaming: true,
+    supportsAbort: true,
+    supportsSession: true,
+  }
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
   private cliModel?: string
@@ -39,12 +47,12 @@ export class GeminiCliProvider implements AIProvider {
     this.session.end()
   }
 
-  async chat(messages: Message[], systemPrompt?: string): Promise<string> {
+  async chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string> {
     const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
       ? this.session.buildPromptLastOnly(messages)
       : this.session.buildPrompt(messages, systemPrompt)
     try {
-      const result = await withRetry(() => this.runGemini(prompt))
+      const result = await withRetry(() => this.runGemini(prompt, options))
       this.session.markMessageSent()
       return result
     } catch (err) {
@@ -66,67 +74,37 @@ export class GeminiCliProvider implements AIProvider {
     }
   }
 
-  private runGemini(prompt: string): Promise<string> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+  private runGemini(prompt: string, options?: ChatOptions): Promise<string> {
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
+    const args = ['-y', '-o', 'json', '-p', '-']
+    if (this.cliModel) {
+      args.push('--model', this.cliModel)
+    }
+    if (this.sessionEnabled && this.sessionId) {
+      args.push('--resume', this.sessionId)
+    }
 
-    return new Promise((resolve, reject) => {
-      const args = ['-y', '-o', 'json', '-p', '-']
-      if (this.cliModel) {
-        args.push('--model', this.cliModel)
-      }
-      if (this.sessionEnabled && this.sessionId) {
-        args.push('--resume', this.sessionId)
-      }
-
-      const child = spawn('gemini', args, {
-        cwd: this.cwd,
-        stdio: ['pipe', 'pipe', 'pipe']
-      })
-
-      // Suppress EPIPE: if child exits early, close handler reports the real error
-      child.stdin.on('error', () => {})
-      child.stdin.write(stdinPrompt)
-      child.stdin.end()
-
-      let output = ''
-      let error = ''
-
-      child.stdout.on('data', (data) => {
-        output += data.toString()
-      })
-
-      child.stderr.on('data', (data) => {
-        error += data.toString()
-      })
-
-      child.on('close', (code) => {
-        cleanup()
-        if (code !== 0) {
-          reject(new Error(`Gemini CLI exited with code ${code}: ${error}`))
-        } else {
-          try {
-            const json = JSON.parse(output.trim())
-            // Capture session_id from response
-            if (this.sessionEnabled && json.session_id) {
-              this.session.sessionId = json.session_id
-            }
-            resolve(json.response || '')
-          } catch {
-            // Fallback: treat as plain text if JSON parsing fails
-            resolve(output.trim())
-          }
+    return runCliProcess({
+      command: 'gemini',
+      args,
+      cwd: this.cwd,
+      stdin: stdinPrompt,
+      timeoutMs: this.timeout,
+    }).then(({ stdout }) => {
+      try {
+        const json = JSON.parse(stdout.trim())
+        if (this.sessionEnabled && json.session_id) {
+          this.session.sessionId = json.session_id
         }
-      })
-
-      child.on('error', (err) => {
-        cleanup()
-        reject(new Error(`Failed to run gemini CLI: ${err.message}`))
-      })
-    })
+        return json.response || ''
+      } catch {
+        return stdout.trim()
+      }
+    }).finally(cleanup)
   }
 
   private async *runGeminiStream(prompt: string, options?: ChatStreamOptions): AsyncGenerator<string, void, unknown> {
-    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt, { allowTempFile: !options?.disableTools })
 
     const args = ['-y', '-o', 'stream-json', '-p', '-']
     if (this.cliModel) {
