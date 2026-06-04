@@ -21,6 +21,8 @@ export interface ReviewTarget {
   baseBranch?: string
   headSha?: string
   diff?: string
+  diffNotice?: string
+  cliCanFetchPr?: boolean
   files?: ReviewTargetFile[]
 }
 
@@ -28,6 +30,7 @@ export interface ReviewTargetPayload {
   promptForCli: string
   promptForApi: string
   diff?: string
+  diffNotice?: string
   files?: ReviewTargetFile[]
 }
 

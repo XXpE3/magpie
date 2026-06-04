@@ -14,6 +14,15 @@ const apiCapabilities: ProviderCapabilities = {
   supportsSession: false,
 }
 
+const cliCapabilities: ProviderCapabilities = {
+  canReadRepo: true,
+  canUseTools: true,
+  canDisableTools: true,
+  supportsStreaming: true,
+  supportsAbort: true,
+  supportsSession: true,
+}
+
 function makeProvider(name: string, capabilities: ProviderCapabilities = apiCapabilities): AIProvider {
   return {
     name,
@@ -63,6 +72,40 @@ describe('ReviewTargetPayload', () => {
     expect(prompt).toContain('export const value = 1')
     expect(prompt).toContain('## src/missing.ts')
     expect(prompt).toContain('Error reading file: ENOENT: no such file')
+  })
+
+  it('keeps prefetched PR diff for CLI providers that cannot fetch PRs themselves', () => {
+    const target: ReviewTarget = {
+      kind: 'pr',
+      label: 'PR #42',
+      repoRoot: '/repo',
+      prNumber: '42',
+      prUrl: 'https://github.com/acme/repo/pull/42',
+      diff: 'diff --git a/src/a.ts b/src/a.ts\n+export const a = 1',
+      cliCanFetchPr: false,
+    }
+
+    const prompt = selectReviewPrompt(buildReviewTargetPayload(target), cliCapabilities)
+
+    expect(prompt).toContain('```diff\ndiff --git a/src/a.ts b/src/a.ts\n+export const a = 1\n```')
+    expect(prompt).toContain('You already have the complete diff above')
+  })
+
+  it('includes large PR truncation notice in prompts that embed diff', () => {
+    const target: ReviewTarget = {
+      kind: 'pr',
+      label: 'PR #42',
+      repoRoot: '/repo',
+      prNumber: '42',
+      prUrl: 'https://github.com/acme/repo/pull/42',
+      diff: 'diff --git a/src/a.ts b/src/a.ts\n+export const a = 1',
+      diffNotice: 'NOTE: This is a large PR. Diff truncated to fit context: 2/5 files included.',
+    }
+
+    const prompt = selectReviewPrompt(buildReviewTargetPayload(target), apiCapabilities)
+
+    expect(prompt).toContain('NOTE: This is a large PR. Diff truncated to fit context: 2/5 files included.')
+    expect(prompt).toContain('```diff\ndiff --git a/src/a.ts b/src/a.ts\n+export const a = 1\n```')
   })
 
   it('passes PR target diff and base branch to context gatherer', async () => {

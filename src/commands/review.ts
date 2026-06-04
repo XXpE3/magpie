@@ -306,6 +306,7 @@ export const reviewCommand = new Command('review')
         }
 
         let prDiff = ''
+        let diffNotice: string | undefined
         try {
           prDiff = runGh(['pr', 'diff', prUrl], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 })
           const originalLines = prDiff.split('\n').length
@@ -333,6 +334,7 @@ export const reviewCommand = new Command('review')
                 console.log(chalk.dim(`  Reconstructed diff: ${result.includedFiles}/${result.totalFiles} files (~${prDiff.split('\n').length} lines)`))
                 if (result.truncated) {
                   console.log(chalk.yellow(`  Diff truncated to fit context window. Some files excluded.`))
+                  diffNotice = `NOTE: This is a large PR. ${result.summary}`
                 }
               }
             } catch (fallbackErr) {
@@ -343,6 +345,12 @@ export const reviewCommand = new Command('review')
           }
         }
 
+        const allReviewerConfigs = [
+          ...Object.values(config.reviewers),
+          config.analyzer,
+          config.summarizer,
+        ]
+
         target = {
           kind: 'pr',
           label: prTitle ? `PR #${prNumber}: ${prTitle}` : `PR #${prNumber}`,
@@ -352,7 +360,9 @@ export const reviewCommand = new Command('review')
           prUrl,
           baseBranch,
           headSha,
-          diff: prDiff
+          diff: prDiff,
+          diffNotice,
+          cliCanFetchPr: canReviewersFetchPr(config, allReviewerConfigs)
         }
       } else {
         spinner.fail('Error')

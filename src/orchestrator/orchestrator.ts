@@ -133,11 +133,12 @@ function targetHeader(target: ReviewTarget): string {
   return 'Please review the local code changes.'
 }
 
-function formatDiffSection(diff: string | undefined): string {
+function formatDiffSection(diff: string | undefined, notice?: string): string {
   if (!diff?.trim()) {
     return 'Diff was not available. Report this clearly instead of guessing from missing changes.'
   }
-  return `Here is the diff:\n\n\`\`\`diff\n${diff}\n\`\`\``
+  const noticeSection = notice ? `${notice}\n\n` : ''
+  return `${noticeSection}Here is the diff:\n\n\`\`\`diff\n${diff}\n\`\`\``
 }
 
 function formatFilesSection(files: ReviewTarget['files'] | undefined): string {
@@ -159,23 +160,26 @@ export function buildReviewTargetPayload(target: ReviewTarget, fallbackPrompt = 
   let promptForApi = ''
 
   if (target.kind === 'pr') {
-    promptForCli = `${header}\n\nUse your repository tools to inspect the changed files and relevant context. Review every changed file and function systematically.`
-    promptForApi = `${header}\n\n${formatDiffSection(target.diff)}\n\nAnalyze these changes and provide your feedback.`
+    promptForCli = target.cliCanFetchPr === false
+      ? `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not attempt to fetch it again.`
+      : `${header}\n\nUse your repository tools to inspect the changed files and relevant context. Review every changed file and function systematically.`
+    promptForApi = `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback.`
   } else if (target.kind === 'branch') {
     promptForCli = `${header}\n\nUse git and file-reading tools from ${target.repoRoot} to inspect the branch diff and source context.`
-    promptForApi = `${header}\n\n${formatDiffSection(target.diff)}\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not attempt to fetch it again.`
+    promptForApi = `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not attempt to fetch it again.`
   } else if (target.kind === 'files') {
     promptForCli = `${header}\n\nUse file-reading tools from ${target.repoRoot} to inspect the requested files.`
     promptForApi = `${header}\n\nHere are the file contents:\n\n${formatFilesSection(target.files)}\n\nAnalyze these files and provide your feedback.`
   } else {
     promptForCli = `${header}\n\nUse git and file-reading tools from ${target.repoRoot} to inspect the local diff and source context.`
-    promptForApi = `${header}\n\n${formatDiffSection(target.diff)}\n\nAnalyze these changes and provide your feedback.`
+    promptForApi = `${header}\n\n${formatDiffSection(target.diff, target.diffNotice)}\n\nAnalyze these changes and provide your feedback.`
   }
 
   return {
     promptForCli: promptForCli || fallbackPrompt,
     promptForApi: promptForApi || fallbackPrompt,
     diff: target.diff,
+    diffNotice: target.diffNotice,
     files: target.files
   }
 }
