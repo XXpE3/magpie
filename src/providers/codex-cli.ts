@@ -29,6 +29,9 @@ export class CodexCliProvider implements AIProvider {
     this.allowDangerousBypass = options?.cliSecurity?.allowDangerousBypass === true
     this.allowWrite = options?.cliSecurity?.allowWrite === true
     this.allowNetwork = options?.cliSecurity?.allowNetwork === true
+    if (this.allowNetwork && !this.allowWrite && !this.allowDangerousBypass) {
+      throw new Error('Codex CLI allowNetwork requires allowWrite because Codex exposes shell network access through the workspace-write sandbox.')
+    }
     if (this.allowDangerousBypass) {
       logger.warn('Dangerous Codex CLI mode is enabled; reviewers may execute commands or modify files.')
     }
@@ -84,8 +87,7 @@ export class CodexCliProvider implements AIProvider {
     if (this.allowDangerousBypass) {
       globalArgs.push('--dangerously-bypass-approvals-and-sandbox')
     } else {
-      // Codex only enables shell network access through the workspace-write sandbox.
-      globalArgs.push('--sandbox', this.allowWrite || this.allowNetwork ? 'workspace-write' : 'read-only')
+      globalArgs.push('--sandbox', this.allowWrite ? 'workspace-write' : 'read-only')
       globalArgs.push('--ask-for-approval', 'never')
     }
     if (this.cliModel) {

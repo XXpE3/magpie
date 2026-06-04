@@ -3,6 +3,7 @@ import chalk from 'chalk'
 import ora from 'ora'
 import { execSync } from 'child_process'
 import { loadConfig } from '../config/loader.js'
+import type { CliProviderConfig, MagpieConfig, ReviewerConfig } from '../config/types.js'
 import { createProvider, isCliModel } from '../providers/factory.js'
 import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
 import type { DebateResult, Reviewer, ReviewerStatus } from '../orchestrator/types.js'
@@ -29,6 +30,27 @@ marked.setOptions({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TerminalRenderer type mismatch with marked
   }) as any
 })
+
+export function canCliProviderFetchPr(config: MagpieConfig, provider: string): boolean {
+  const configuredProvider = config.providers?.[provider] as (CliProviderConfig & { type?: string }) | undefined
+  const providerName = configuredProvider?.type || provider
+
+  if (providerName === 'claude-code' || providerName === 'codex-cli') {
+    const cliConfig = configuredProvider || config.providers?.[providerName] as CliProviderConfig | undefined
+    if (cliConfig?.allowDangerousBypass === true) return true
+    if (providerName === 'codex-cli') {
+      return cliConfig?.allowNetwork === true && cliConfig?.allowWrite === true
+    }
+    return cliConfig?.allowNetwork === true
+  }
+
+  return true
+}
+
+export function canReviewersFetchPr(config: MagpieConfig, reviewerConfigs: ReviewerConfig[]): boolean {
+  return reviewerConfigs.every(rc => isCliModel(config, rc.provider))
+    && reviewerConfigs.every(rc => canCliProviderFetchPr(config, rc.provider))
+}
 
 export const reviewCommand = new Command('review')
   .description('Review code changes with multiple AI reviewers')
@@ -248,15 +270,15 @@ export const reviewCommand = new Command('review')
           config.analyzer,
           config.summarizer,
         ]
-        const allCli = allReviewerConfigs.every(rc => isCliModel(config, rc.provider))
+        const cliReviewersCanFetchPr = canReviewersFetchPr(config, allReviewerConfigs)
 
         let prPrompt: string
-        if (allCli) {
+        if (cliReviewersCanFetchPr) {
           // CLI mode: reviewers fetch diff and read code themselves
           console.log(chalk.dim(`  CLI-only reviewers detected — reviewers will fetch diff and read code directly`))
           prPrompt = `Please review ${prUrl}.\n\nTitle: ${prTitle}\n\nDescription:\n${prBody}\n\nYou have full access to the repository. Use \`gh pr diff ${prUrl}\` to get the diff, then use Read/Grep tools to examine the actual source files for context. Review every changed file and function systematically.`
         } else {
-          // API mode: pre-fetch diff and embed in prompt
+          // API reviewers, and CLI reviewers without network permission, need the diff embedded.
           let prDiff = ''
           let diffTruncationNote = ''
           try {

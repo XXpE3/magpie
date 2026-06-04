@@ -166,24 +166,10 @@ describe('CLI provider safety defaults', () => {
     ])
   })
 
-  it('uses a network-capable Codex CLI sandbox when network is enabled', () => {
-    const provider = new CodexCliProvider({
+  it('rejects Codex CLI network access without write access', () => {
+    expect(() => new CodexCliProvider({
       cliSecurity: { allowNetwork: true },
-    })
-    const args = (provider as unknown as CodexArgsBuilder).buildArgs()
-
-    expect(args).toEqual([
-      '--search',
-      '-c',
-      'sandbox_workspace_write.network_access=true',
-      '--sandbox',
-      'workspace-write',
-      '--ask-for-approval',
-      'never',
-      'exec',
-      '--json',
-      '-',
-    ])
+    })).toThrow('allowNetwork requires allowWrite')
   })
 
   it('keeps Codex CLI safety flags before exec resume', () => {
