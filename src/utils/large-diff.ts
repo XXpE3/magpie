@@ -1,8 +1,8 @@
 // src/utils/large-diff.ts
 // Utilities for fetching and truncating large PR diffs that exceed GitHub's 20k line limit.
 
-import { execSync } from 'child_process'
 import { logger } from './logger.js'
+import { runGh, validateGitHubRepo, validateGitSha, validatePRNumber } from './command.js'
 
 export interface LargeDiffOptions {
   /** Max total lines to include in the diff (default: 15000) */
@@ -33,6 +33,8 @@ export function fetchLargePRDiff(repo: string, prNumber: string, options: LargeD
   truncated: boolean
   summary: string
 } {
+  const validatedRepo = validateGitHubRepo(repo)
+  const validatedPrNumber = validatePRNumber(prNumber)
   const maxLines = options.maxLines ?? 15000
 
   // Step 1: Get PR metadata (base SHA, head SHA, commit count)
@@ -40,12 +42,12 @@ export function fetchLargePRDiff(repo: string, prNumber: string, options: LargeD
   let headSha: string
   let commitCount: number
   try {
-    const prInfo = JSON.parse(execSync(
-      `gh api repos/${repo}/pulls/${prNumber} --jq '{base: .base.sha, head: .head.sha, commits: .commits}'`,
-      { encoding: 'utf-8', timeout: 30000 }
+    const prInfo = JSON.parse(runGh(
+      ['api', `repos/${validatedRepo}/pulls/${validatedPrNumber}`, '--jq', '{base: .base.sha, head: .head.sha, commits: .commits}'],
+      { timeout: 30000 }
     ))
-    baseSha = prInfo.base
-    headSha = prInfo.head
+    baseSha = validateGitSha(prInfo.base)
+    headSha = validateGitSha(prInfo.head)
     commitCount = prInfo.commits || 1
   } catch (e) {
     throw new Error(`Failed to get PR info: ${e instanceof Error ? e.message.slice(0, 200) : e}`)
@@ -56,30 +58,31 @@ export function fetchLargePRDiff(repo: string, prNumber: string, options: LargeD
   try {
     if (commitCount === 1) {
       // Single commit: use commit diff endpoint (no 20k limit)
-      fullDiff = execSync(
-        `gh api repos/${repo}/commits/${headSha} -H "Accept: application/vnd.github.v3.diff"`,
-        { encoding: 'utf-8', timeout: 120000, maxBuffer: 50 * 1024 * 1024 }
+      fullDiff = runGh(
+        ['api', `repos/${validatedRepo}/commits/${headSha}`, '-H', 'Accept: application/vnd.github.v3.diff'],
+        { timeout: 120000, maxBuffer: 50 * 1024 * 1024 }
       )
     } else {
       // Multi-commit: try compare endpoint
-      fullDiff = execSync(
-        `gh api repos/${repo}/compare/${baseSha}...${headSha} -H "Accept: application/vnd.github.v3.diff"`,
-        { encoding: 'utf-8', timeout: 120000, maxBuffer: 50 * 1024 * 1024 }
+      fullDiff = runGh(
+        ['api', `repos/${validatedRepo}/compare/${baseSha}...${headSha}`, '-H', 'Accept: application/vnd.github.v3.diff'],
+        { timeout: 120000, maxBuffer: 50 * 1024 * 1024 }
       )
     }
   } catch {
     // Fallback: try per-commit diffs concatenated
     try {
-      const commits = JSON.parse(execSync(
-        `gh api repos/${repo}/pulls/${prNumber}/commits --jq '[.[].sha]'`,
-        { encoding: 'utf-8', timeout: 30000 }
+      const commits = JSON.parse(runGh(
+        ['api', `repos/${validatedRepo}/pulls/${validatedPrNumber}/commits`, '--jq', '[.[].sha]'],
+        { timeout: 30000 }
       ))
       const diffs: string[] = []
       for (const sha of commits) {
         try {
-          const d = execSync(
-            `gh api repos/${repo}/commits/${sha} -H "Accept: application/vnd.github.v3.diff"`,
-            { encoding: 'utf-8', timeout: 60000, maxBuffer: 20 * 1024 * 1024 }
+          const validatedSha = validateGitSha(sha)
+          const d = runGh(
+            ['api', `repos/${validatedRepo}/commits/${validatedSha}`, '-H', 'Accept: application/vnd.github.v3.diff'],
+            { timeout: 60000, maxBuffer: 20 * 1024 * 1024 }
           )
           diffs.push(d)
         } catch {
