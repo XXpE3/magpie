@@ -35,12 +35,12 @@ describe('CLI provider safety defaults', () => {
       'Read',
       'Grep',
       'Glob',
-      'Bash(gh pr view:*)',
-      'Bash(gh pr diff:*)',
-      'Bash(git diff:*)',
-      'Bash(git show:*)',
-      'Bash(git log:*)',
-      'Bash(git status:*)',
+      'Bash(gh pr view *)',
+      'Bash(gh pr diff *)',
+      'Bash(git diff *)',
+      'Bash(git show *)',
+      'Bash(git log *)',
+      'Bash(git status *)',
     ].join(','))
   })
 
@@ -60,7 +60,7 @@ describe('CLI provider safety defaults', () => {
       cliSecurity: {
         allowWrite: true,
         allowNetwork: true,
-        extraAllowedTools: ['Bash(git branch:*)', ''],
+        extraAllowedTools: ['Bash(git branch *)', ''],
       },
     })
     const args = (provider as unknown as ClaudeArgsBuilder).buildArgs(false)
@@ -82,18 +82,18 @@ describe('CLI provider safety defaults', () => {
       'Read',
       'Grep',
       'Glob',
-      'Bash(gh pr view:*)',
-      'Bash(gh pr diff:*)',
-      'Bash(git diff:*)',
-      'Bash(git show:*)',
-      'Bash(git log:*)',
-      'Bash(git status:*)',
+      'Bash(gh pr view *)',
+      'Bash(gh pr diff *)',
+      'Bash(git diff *)',
+      'Bash(git show *)',
+      'Bash(git log *)',
+      'Bash(git status *)',
       'Edit',
       'MultiEdit',
       'Write',
       'WebFetch',
       'WebSearch',
-      'Bash(git branch:*)',
+      'Bash(git branch *)',
     ])
   })
 

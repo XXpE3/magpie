@@ -9,12 +9,12 @@ import { logger } from '../utils/logger.js'
 
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob']
 const READ_ONLY_BASH_TOOLS = [
-  'Bash(gh pr view:*)',
-  'Bash(gh pr diff:*)',
-  'Bash(git diff:*)',
-  'Bash(git show:*)',
-  'Bash(git log:*)',
-  'Bash(git status:*)',
+  'Bash(gh pr view *)',
+  'Bash(gh pr diff *)',
+  'Bash(git diff *)',
+  'Bash(git show *)',
+  'Bash(git log *)',
+  'Bash(git status *)',
 ]
 const WRITE_TOOLS = ['Edit', 'MultiEdit', 'Write']
 const NETWORK_TOOLS = ['WebFetch', 'WebSearch']
