@@ -126,11 +126,11 @@ describe('CLI provider safety defaults', () => {
 
     expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox')
     expect(args).toEqual([
+      'exec',
       '--sandbox',
       'read-only',
-      '--ask-for-approval',
-      'never',
-      'exec',
+      '-c',
+      'approval_policy=never',
       '--json',
       '-',
     ])
@@ -144,6 +144,12 @@ describe('CLI provider safety defaults', () => {
 
     expect(args).toContain('--dangerously-bypass-approvals-and-sandbox')
     expect(args).not.toContain('--sandbox')
+    expect(args).toEqual([
+      'exec',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '--json',
+      '-',
+    ])
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Dangerous Codex CLI mode'))
   })
 
@@ -158,13 +164,13 @@ describe('CLI provider safety defaults', () => {
 
     expect(args).toEqual([
       '--search',
+      'exec',
       '-c',
       'sandbox_workspace_write.network_access=true',
       '--sandbox',
       'workspace-write',
-      '--ask-for-approval',
-      'never',
-      'exec',
+      '-c',
+      'approval_policy=never',
       '--json',
       '-',
     ])
@@ -185,14 +191,14 @@ describe('CLI provider safety defaults', () => {
     const args = (provider as unknown as CodexArgsBuilder).buildArgs()
 
     expect(args).toEqual([
+      'exec',
       '--sandbox',
       'read-only',
-      '--ask-for-approval',
-      'never',
-      'exec',
+      '-c',
+      'approval_policy=never',
+      '--json',
       'resume',
       'thread-123',
-      '--json',
       '-',
     ])
   })

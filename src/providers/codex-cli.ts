@@ -80,25 +80,27 @@ export class CodexCliProvider implements AIProvider {
   }
 
   private buildArgs(): string[] {
-    const globalArgs = this.allowNetwork
-      ? ['--search', '-c', 'sandbox_workspace_write.network_access=true']
-      : []
-    const baseArgs = ['--json']
+    const rootArgs = this.allowNetwork ? ['--search'] : []
+    const execArgs: string[] = []
+    if (this.allowNetwork) {
+      execArgs.push('-c', 'sandbox_workspace_write.network_access=true')
+    }
     if (this.allowDangerousBypass) {
-      globalArgs.push('--dangerously-bypass-approvals-and-sandbox')
+      execArgs.push('--dangerously-bypass-approvals-and-sandbox')
     } else {
-      globalArgs.push('--sandbox', this.allowWrite ? 'workspace-write' : 'read-only')
-      globalArgs.push('--ask-for-approval', 'never')
+      execArgs.push('--sandbox', this.allowWrite ? 'workspace-write' : 'read-only')
+      execArgs.push('-c', 'approval_policy=never')
     }
     if (this.cliModel) {
-      baseArgs.push('--model', this.cliModel)
+      execArgs.push('--model', this.cliModel)
     }
+    execArgs.push('--json')
     if (this.sessionEnabled && this.sessionId) {
       // Resume existing session
-      return [...globalArgs, 'exec', 'resume', this.sessionId, ...baseArgs, '-']
+      return [...rootArgs, 'exec', ...execArgs, 'resume', this.sessionId, '-']
     }
     // New session or no session
-    return [...globalArgs, 'exec', ...baseArgs, '-']
+    return [...rootArgs, 'exec', ...execArgs, '-']
   }
 
   // Parse JSONL output: extract thread_id and agent_message text
