@@ -77,12 +77,15 @@ export class CodexCliProvider implements AIProvider {
   }
 
   private buildArgs(): string[] {
-    const globalArgs = this.allowNetwork ? ['--search'] : []
+    const globalArgs = this.allowNetwork
+      ? ['--search', '-c', 'sandbox_workspace_write.network_access=true']
+      : []
     const baseArgs = ['--json']
     if (this.allowDangerousBypass) {
       globalArgs.push('--dangerously-bypass-approvals-and-sandbox')
     } else {
-      globalArgs.push('--sandbox', this.allowWrite ? 'workspace-write' : 'read-only')
+      // Codex only enables shell network access through the workspace-write sandbox.
+      globalArgs.push('--sandbox', this.allowWrite || this.allowNetwork ? 'workspace-write' : 'read-only')
       globalArgs.push('--ask-for-approval', 'never')
     }
     if (this.cliModel) {

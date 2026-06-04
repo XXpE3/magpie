@@ -35,8 +35,6 @@ describe('CLI provider safety defaults', () => {
       'Read',
       'Grep',
       'Glob',
-      'Bash(gh pr view *)',
-      'Bash(gh pr diff *)',
       'Bash(git diff *)',
       'Bash(git show *)',
       'Bash(git log *)',
@@ -82,8 +80,6 @@ describe('CLI provider safety defaults', () => {
       'Read',
       'Grep',
       'Glob',
-      'Bash(gh pr view *)',
-      'Bash(gh pr diff *)',
       'Bash(git diff *)',
       'Bash(git show *)',
       'Bash(git log *)',
@@ -93,8 +89,23 @@ describe('CLI provider safety defaults', () => {
       'Write',
       'WebFetch',
       'WebSearch',
+      'Bash(gh pr view *)',
+      'Bash(gh pr diff *)',
       'Bash(git branch *)',
     ])
+  })
+
+  it('allows Claude Code GitHub Bash commands only when network is enabled', () => {
+    const provider = new ClaudeCodeProvider({
+      cliSecurity: { allowNetwork: true },
+    })
+    const args = (provider as unknown as ClaudeArgsBuilder).buildArgs(false)
+    const allowedTools = args[args.indexOf('--allowedTools') + 1].split(',')
+
+    expect(allowedTools).toContain('Bash(gh pr view *)')
+    expect(allowedTools).toContain('Bash(gh pr diff *)')
+    expect(allowedTools).not.toContain('Edit')
+    expect(allowedTools).not.toContain('Write')
   })
 
   it('keeps disableTools stronger than Claude Code defaults', () => {
@@ -143,6 +154,28 @@ describe('CLI provider safety defaults', () => {
 
     expect(args).toEqual([
       '--search',
+      '-c',
+      'sandbox_workspace_write.network_access=true',
+      '--sandbox',
+      'workspace-write',
+      '--ask-for-approval',
+      'never',
+      'exec',
+      '--json',
+      '-',
+    ])
+  })
+
+  it('uses a network-capable Codex CLI sandbox when network is enabled', () => {
+    const provider = new CodexCliProvider({
+      cliSecurity: { allowNetwork: true },
+    })
+    const args = (provider as unknown as CodexArgsBuilder).buildArgs()
+
+    expect(args).toEqual([
+      '--search',
+      '-c',
+      'sandbox_workspace_write.network_access=true',
       '--sandbox',
       'workspace-write',
       '--ask-for-approval',

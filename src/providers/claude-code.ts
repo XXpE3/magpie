@@ -8,13 +8,15 @@ import { terminateProcess } from './process-control.js'
 import { logger } from '../utils/logger.js'
 
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob']
-const READ_ONLY_BASH_TOOLS = [
-  'Bash(gh pr view *)',
-  'Bash(gh pr diff *)',
+const LOCAL_READ_ONLY_BASH_TOOLS = [
   'Bash(git diff *)',
   'Bash(git show *)',
   'Bash(git log *)',
   'Bash(git status *)',
+]
+const NETWORK_READ_ONLY_BASH_TOOLS = [
+  'Bash(gh pr view *)',
+  'Bash(gh pr diff *)',
 ]
 const WRITE_TOOLS = ['Edit', 'MultiEdit', 'Write']
 const NETWORK_TOOLS = ['WebFetch', 'WebSearch']
@@ -112,12 +114,13 @@ export class ClaudeCodeProvider implements AIProvider {
   }
 
   private buildAllowedTools(): string[] {
-    const tools = new Set([...READ_ONLY_TOOLS, ...READ_ONLY_BASH_TOOLS])
+    const tools = new Set([...READ_ONLY_TOOLS, ...LOCAL_READ_ONLY_BASH_TOOLS])
     if (this.allowWrite) {
       for (const tool of WRITE_TOOLS) tools.add(tool)
     }
     if (this.allowNetwork) {
       for (const tool of NETWORK_TOOLS) tools.add(tool)
+      for (const tool of NETWORK_READ_ONLY_BASH_TOOLS) tools.add(tool)
     }
     for (const tool of this.extraAllowedTools) {
       const trimmed = tool.trim()
