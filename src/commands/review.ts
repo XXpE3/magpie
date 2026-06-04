@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
-import { execSync } from 'child_process'
+import { execFileSync, execSync } from 'child_process'
 import { loadConfig } from '../config/loader.js'
 import type { CliProviderConfig, MagpieConfig, ReviewerConfig } from '../config/types.js'
 import { createProvider, isCliModel } from '../providers/factory.js'
@@ -50,6 +50,10 @@ export function canCliProviderFetchPr(config: MagpieConfig, provider: string): b
 export function canReviewersFetchPr(config: MagpieConfig, reviewerConfigs: ReviewerConfig[]): boolean {
   return reviewerConfigs.every(rc => isCliModel(config, rc.provider))
     && reviewerConfigs.every(rc => canCliProviderFetchPr(config, rc.provider))
+}
+
+export function buildBranchReviewPrompt(currentBranch: string, baseBranch: string, diff: string): string {
+  return `Please review the changes in branch "${currentBranch}" compared to "${baseBranch}".\n\nHere is the branch diff:\n\n\`\`\`diff\n${diff}\n\`\`\`\n\nAnalyze these changes and provide your feedback. You already have the complete diff above; do not attempt to fetch it again.`
 }
 
 export const reviewCommand = new Command('review')
@@ -184,11 +188,31 @@ export const reviewCommand = new Command('review')
         }
       } else if (options.branch !== undefined) {
         const baseBranch = typeof options.branch === 'string' ? options.branch : 'main'
-        const currentBranch = execSync('git branch --show-current', { encoding: 'utf-8' }).trim()
+        const currentBranch = execFileSync('git', ['branch', '--show-current'], { encoding: 'utf-8' }).trim()
+        let branchDiff = ''
+        try {
+          branchDiff = filterDiff(
+            execFileSync('git', ['diff', `${baseBranch}...${currentBranch}`], {
+              encoding: 'utf-8',
+              maxBuffer: 10 * 1024 * 1024,
+            }),
+            config.defaults.diff_exclude
+          )
+        } catch {
+          spinner.fail('Failed to get branch diff')
+          console.error(chalk.red(`Error: Could not compare branch "${currentBranch}" to "${baseBranch}"`))
+          process.exit(1)
+        }
+        if (!branchDiff.trim()) {
+          spinner.fail('No branch changes found')
+          console.error(chalk.yellow(`Tip: Make changes on "${currentBranch}" or choose a different base branch.`))
+          process.exit(0)
+        }
+        spinner.succeed(`Found branch changes (${branchDiff.split('\n').length} lines)`)
         target = {
           type: 'branch',
           label: `Branch: ${currentBranch}`,
-          prompt: `Review the changes in branch "${currentBranch}" compared to "${baseBranch}".`
+          prompt: buildBranchReviewPrompt(currentBranch, baseBranch, branchDiff)
         }
       } else if (options.files) {
         target = {

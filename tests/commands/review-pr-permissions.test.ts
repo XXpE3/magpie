@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { canCliProviderFetchPr, canReviewersFetchPr } from '../../src/commands/review.js'
+import { buildBranchReviewPrompt, canCliProviderFetchPr, canReviewersFetchPr } from '../../src/commands/review.js'
 import type { MagpieConfig, ReviewerConfig } from '../../src/config/types.js'
 
 const baseConfig: MagpieConfig = {
@@ -84,5 +84,15 @@ describe('PR review provider permissions', () => {
 
   it('does not use direct PR fetching when any role is an API provider', () => {
     expect(canReviewersFetchPr(baseConfig, [role('gemini-cli'), role('openai')])).toBe(false)
+  })
+})
+
+describe('branch review prompt', () => {
+  it('embeds the branch diff for read-only CLI reviewers', () => {
+    const prompt = buildBranchReviewPrompt('feature', 'main', 'diff --git a/a.ts b/a.ts\n+const x = 1')
+
+    expect(prompt).toContain('branch "feature" compared to "main"')
+    expect(prompt).toContain('```diff\ndiff --git a/a.ts b/a.ts\n+const x = 1\n```')
+    expect(prompt).toContain('You already have the complete diff above')
   })
 })
