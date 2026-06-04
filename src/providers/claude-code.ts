@@ -8,6 +8,14 @@ import { terminateProcess } from './process-control.js'
 import { logger } from '../utils/logger.js'
 
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob']
+const READ_ONLY_BASH_TOOLS = [
+  'Bash(gh pr view:*)',
+  'Bash(gh pr diff:*)',
+  'Bash(git diff:*)',
+  'Bash(git show:*)',
+  'Bash(git log:*)',
+  'Bash(git status:*)',
+]
 const WRITE_TOOLS = ['Edit', 'MultiEdit', 'Write']
 const NETWORK_TOOLS = ['WebFetch', 'WebSearch']
 
@@ -87,8 +95,24 @@ export class ClaudeCodeProvider implements AIProvider {
     return env
   }
 
-  private buildTools(): string[] {
-    const tools = new Set(READ_ONLY_TOOLS)
+  private buildAvailableTools(): string[] {
+    const tools = new Set([...READ_ONLY_TOOLS, 'Bash'])
+    if (this.allowWrite) {
+      for (const tool of WRITE_TOOLS) tools.add(tool)
+    }
+    if (this.allowNetwork) {
+      for (const tool of NETWORK_TOOLS) tools.add(tool)
+    }
+    for (const tool of this.extraAllowedTools) {
+      const trimmed = tool.trim()
+      const toolName = trimmed.split('(', 1)[0]
+      if (toolName) tools.add(toolName)
+    }
+    return [...tools]
+  }
+
+  private buildAllowedTools(): string[] {
+    const tools = new Set([...READ_ONLY_TOOLS, ...READ_ONLY_BASH_TOOLS])
     if (this.allowWrite) {
       for (const tool of WRITE_TOOLS) tools.add(tool)
     }
@@ -113,8 +137,8 @@ export class ClaudeCodeProvider implements AIProvider {
     if (disableTools) {
       args.push('--tools', '')
     } else if (!this.allowDangerousBypass) {
-      const tools = this.buildTools().join(',')
-      args.push('--tools', tools, '--allowedTools', tools)
+      args.push('--tools', this.buildAvailableTools().join(','))
+      args.push('--allowedTools', this.buildAllowedTools().join(','))
     }
     if (stream) {
       args.push('--output-format', 'stream-json', '--verbose')

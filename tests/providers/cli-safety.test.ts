@@ -30,8 +30,18 @@ describe('CLI provider safety defaults', () => {
     expect(args).not.toContain('--dangerously-skip-permissions')
     expect(args).toContain('--tools')
     expect(args).toContain('--allowedTools')
-    expect(args[args.indexOf('--tools') + 1]).toBe('Read,Grep,Glob')
-    expect(args[args.indexOf('--allowedTools') + 1]).toBe('Read,Grep,Glob')
+    expect(args[args.indexOf('--tools') + 1]).toBe('Read,Grep,Glob,Bash')
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe([
+      'Read',
+      'Grep',
+      'Glob',
+      'Bash(gh pr view:*)',
+      'Bash(gh pr diff:*)',
+      'Bash(git diff:*)',
+      'Bash(git show:*)',
+      'Bash(git log:*)',
+      'Bash(git status:*)',
+    ].join(','))
   })
 
   it('adds Claude Code dangerous bypass only when explicitly enabled', () => {
@@ -50,22 +60,40 @@ describe('CLI provider safety defaults', () => {
       cliSecurity: {
         allowWrite: true,
         allowNetwork: true,
-        extraAllowedTools: ['Bash(git diff:*)', ''],
+        extraAllowedTools: ['Bash(git branch:*)', ''],
       },
     })
     const args = (provider as unknown as ClaudeArgsBuilder).buildArgs(false)
-    const tools = args[args.indexOf('--tools') + 1].split(',')
+    const availableTools = args[args.indexOf('--tools') + 1].split(',')
+    const allowedTools = args[args.indexOf('--allowedTools') + 1].split(',')
 
-    expect(tools).toEqual([
+    expect(availableTools).toEqual([
       'Read',
       'Grep',
       'Glob',
+      'Bash',
       'Edit',
       'MultiEdit',
       'Write',
       'WebFetch',
       'WebSearch',
+    ])
+    expect(allowedTools).toEqual([
+      'Read',
+      'Grep',
+      'Glob',
+      'Bash(gh pr view:*)',
+      'Bash(gh pr diff:*)',
       'Bash(git diff:*)',
+      'Bash(git show:*)',
+      'Bash(git log:*)',
+      'Bash(git status:*)',
+      'Edit',
+      'MultiEdit',
+      'Write',
+      'WebFetch',
+      'WebSearch',
+      'Bash(git branch:*)',
     ])
   })
 
