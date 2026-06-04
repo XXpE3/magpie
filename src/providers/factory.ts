@@ -1,6 +1,6 @@
 // src/providers/factory.ts
 import type { AIProvider } from './types.js'
-import type { MagpieConfig, ProviderConfig, OllamaProviderConfig } from '../config/types.js'
+import type { CliProviderConfig, MagpieConfig, ProviderConfig, OllamaProviderConfig } from '../config/types.js'
 import { AnthropicProvider } from './anthropic.js'
 import { OpenAIProvider } from './openai.js'
 import { ClaudeCodeProvider } from './claude-code.js'
@@ -67,8 +67,12 @@ function resolveProviderName(config: MagpieConfig, provider: string): ProviderNa
   throw new Error(`Unknown provider: ${provider}. Check the provider name or set providers.${provider}.type to a supported provider type.`)
 }
 
-function getProviderConfig(config: MagpieConfig, providerName: ProviderName, provider: string): ProviderConfig | OllamaProviderConfig | undefined {
+function getProviderConfig(config: MagpieConfig, providerName: ProviderName, provider: string): ProviderConfig | OllamaProviderConfig | CliProviderConfig | undefined {
   return config.providers?.[provider] || config.providers?.[providerName]
+}
+
+function getCliSecurityConfig(config: MagpieConfig, providerName: ProviderName, provider: string): CliProviderConfig | undefined {
+  return getProviderConfig(config, providerName, provider) as CliProviderConfig | undefined
 }
 
 function getCliModel(model: string, providerName: ProviderName): string | undefined {
@@ -91,13 +95,13 @@ export function createProvider(model: string, config: MagpieConfig, provider: st
   // Claude Code doesn't need API key config
   if (providerName === 'claude-code') {
     checkCliBinary('claude', 'Claude Code')
-    return new ClaudeCodeProvider({ cliModel })
+    return new ClaudeCodeProvider({ cliModel, cliSecurity: getCliSecurityConfig(config, providerName, provider) })
   }
 
   // Codex CLI doesn't need API key config
   if (providerName === 'codex-cli') {
     checkCliBinary('codex', 'Codex')
-    return new CodexCliProvider({ cliModel })
+    return new CodexCliProvider({ cliModel, cliSecurity: getCliSecurityConfig(config, providerName, provider) })
   }
 
   // Gemini CLI doesn't need API key config (uses Google account)

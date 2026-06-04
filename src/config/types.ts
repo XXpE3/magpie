@@ -8,6 +8,17 @@ export interface ProviderConfig {
   enabled?: boolean
 }
 
+export interface CliSecurityConfig {
+  allowDangerousBypass?: boolean
+  allowWrite?: boolean
+  allowNetwork?: boolean
+  extraAllowedTools?: string[]
+}
+
+export interface CliProviderConfig extends ProviderConfig, CliSecurityConfig {
+  enabled?: boolean
+}
+
 export interface OllamaProviderConfig {
   type?: 'ollama' | 'openai'
   api_key?: string
@@ -48,12 +59,13 @@ export interface ContextGathererConfigOptions {
 
 export interface MagpieConfig {
   prompt_file?: string
-  providers: Record<string, ProviderConfig | OllamaProviderConfig | undefined> & {
+  providers: Record<string, ProviderConfig | OllamaProviderConfig | CliProviderConfig | undefined> & {
     anthropic?: ProviderConfig
     openai?: ProviderConfig
     google?: ProviderConfig
-    'claude-code'?: { enabled: boolean }
-    'codex-cli'?: { enabled: boolean }
+    'claude-code'?: CliProviderConfig
+    'codex-cli'?: CliProviderConfig
+    'gemini-cli'?: { enabled: boolean }
     'qwen-code'?: { enabled: boolean }
     minimax?: ProviderConfig
     ollama?: OllamaProviderConfig

@@ -1,5 +1,6 @@
 // src/providers/types.ts
 import { randomUUID } from 'crypto'
+import type { CliSecurityConfig } from '../config/types.js'
 
 export interface Message {
   role: 'system' | 'user' | 'assistant'
@@ -57,6 +58,7 @@ export interface ProviderOptions {
 
 export interface CliProviderOptions {
   cliModel?: string  // Model to pass via --model flag to CLI tools
+  cliSecurity?: CliSecurityConfig
 }
 
 // Helper to generate session IDs

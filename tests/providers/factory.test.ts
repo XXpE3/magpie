@@ -125,6 +125,22 @@ describe('Provider Factory', () => {
       expect((provider as unknown as { cliModel?: string }).cliModel).toBe('gpt-5.5')
     })
 
+    it('should pass CLI safety config to CLI providers', () => {
+      const config: MagpieConfig = {
+        ...mockConfig,
+        providers: {
+          ...mockConfig.providers,
+          codexAlias: { type: 'codex-cli', allowWrite: true },
+        }
+      }
+
+      const provider = createProvider('codex-cli', config, 'codexAlias')
+      const args = (provider as unknown as { buildArgs: () => string[] }).buildArgs()
+
+      expect(args).toContain('workspace-write')
+      expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox')
+    })
+
     it('should pass base_url through to API providers', () => {
       const configWithBaseUrl: MagpieConfig = {
         ...mockConfig,

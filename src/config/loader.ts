@@ -3,8 +3,16 @@ import { readFileSync, existsSync } from 'fs'
 import { parse } from 'yaml'
 import { homedir } from 'os'
 import { dirname, isAbsolute, join } from 'path'
-import type { MagpieConfig, ReviewerConfig } from './types.js'
+import type { CliProviderConfig, MagpieConfig, ProviderType, ReviewerConfig } from './types.js'
 import { logger } from '../utils/logger.js'
+
+const CLI_PROVIDER_TYPES: ProviderType[] = ['claude-code', 'codex-cli']
+const DEFAULT_CLI_SECURITY = {
+  allowDangerousBypass: false,
+  allowWrite: false,
+  allowNetwork: false,
+  extraAllowedTools: [] as string[],
+}
 
 export function expandEnvVars(value: string): string {
   return value.replace(/\$\{(\w+)\}/g, (_, envVar) => {
@@ -47,9 +55,31 @@ export function loadConfig(configPath?: string): MagpieConfig {
   const parsed = parse(content)
   const expanded = expandEnvVarsInObject(parsed) as MagpieConfig
 
+  applyCliSecurityDefaults(expanded)
   applySharedReviewerPrompt(expanded, path)
   validateConfig(expanded, path)
   return expanded
+}
+
+function isCliProviderEntry(name: string, provider: unknown): boolean {
+  if ((CLI_PROVIDER_TYPES as string[]).includes(name)) return true
+  if (!provider || typeof provider !== 'object') return false
+  const type = (provider as { type?: unknown }).type
+  return typeof type === 'string' && (CLI_PROVIDER_TYPES as string[]).includes(type)
+}
+
+function applyCliSecurityDefaults(config: MagpieConfig): void {
+  if (!config.providers) return
+  for (const [name, provider] of Object.entries(config.providers)) {
+    if (!provider || !isCliProviderEntry(name, provider)) continue
+    const cliProvider = provider as CliProviderConfig
+    cliProvider.allowDangerousBypass = cliProvider.allowDangerousBypass === true
+    cliProvider.allowWrite = cliProvider.allowWrite === true
+    cliProvider.allowNetwork = cliProvider.allowNetwork === true
+    cliProvider.extraAllowedTools = Array.isArray(cliProvider.extraAllowedTools)
+      ? cliProvider.extraAllowedTools
+      : [...DEFAULT_CLI_SECURITY.extraAllowedTools]
+  }
 }
 
 function getSharedPromptPath(config: MagpieConfig, configPath: string): string {
