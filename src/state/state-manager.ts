@@ -132,6 +132,9 @@ export class StateManager {
         round.timestamp = new Date(round.timestamp)
         for (const msg of round.messages) {
           msg.timestamp = new Date(msg.timestamp)
+          msg.round ??= round.roundNumber
+          msg.phase ??= 'review'
+          msg.status ??= 'success'
         }
       }
       return data as DiscussSession

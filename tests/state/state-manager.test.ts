@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { StateManager } from '../../src/state/state-manager.js'
 import type { ReviewSession, FeatureAnalysis } from '../../src/state/types.js'
-import { mkdtemp, rm } from 'fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -154,5 +154,51 @@ describe('StateManager', () => {
     expect(allSessions[0].id).toBe('paused-1')
     expect(allSessions[1].id).toBe('in-progress-1')
     expect(allSessions[2].id).toBe('complete-1')
+  })
+
+  it('should load legacy discussion messages without round state', async () => {
+    const { homedir } = await import('os')
+    const discussionsDir = join(homedir(), '.magpie', 'discussions')
+    const sessionId = `legacy-round-state-${Date.now()}`
+    const filePath = join(discussionsDir, `${sessionId}.json`)
+
+    await mkdir(discussionsDir, { recursive: true })
+    await writeFile(filePath, JSON.stringify({
+      id: sessionId,
+      title: 'Legacy discussion',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+      status: 'active',
+      reviewerIds: ['reviewer-a'],
+      rounds: [{
+        roundNumber: 2,
+        topic: 'topic',
+        analysis: 'analysis',
+        messages: [{
+          reviewerId: 'reviewer-a',
+          content: 'legacy message',
+          timestamp: '2024-01-01T00:00:00.000Z',
+        }],
+        conclusion: 'conclusion',
+        tokenUsage: [],
+        timestamp: '2024-01-01T00:00:00.000Z',
+      }],
+    }, null, 2))
+
+    try {
+      const loaded = await manager.loadDiscussSession(sessionId)
+
+      expect(loaded).not.toBeNull()
+      expect(loaded!.rounds[0].messages[0]).toMatchObject({
+        reviewerId: 'reviewer-a',
+        content: 'legacy message',
+        round: 2,
+        phase: 'review',
+        status: 'success',
+      })
+      expect(loaded!.rounds[0].messages[0].timestamp).toBeInstanceOf(Date)
+    } finally {
+      await rm(filePath, { force: true })
+    }
   })
 })

@@ -42,10 +42,17 @@ export interface Reviewer {
   systemPrompt: string
 }
 
+export type DebateMessagePhase = 'review' | 'interactive' | 'qa'
+
+export type DebateMessageStatus = 'success' | 'failed' | 'cancelled'
+
 export interface DebateMessage {
   reviewerId: string
   content: string
   timestamp: Date
+  round?: number
+  phase?: DebateMessagePhase
+  status?: DebateMessageStatus
 }
 
 export interface TokenUsage {
@@ -77,6 +84,8 @@ export interface ReviewerStatus {
   outputChars?: number    // cumulative streamed characters
   chunkCount?: number     // observed stream chunks
   stalledFor?: number     // seconds since last activity
+  hasResponded?: boolean
+  lastSeenMessageIndex?: number
 }
 
 export interface ParallelRoundControl {

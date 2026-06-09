@@ -1,6 +1,7 @@
 // src/state/types.ts
 import type { ReviewFocus } from '../orchestrator/repo-orchestrator.js'
 import type { ReviewIssue } from '../reporter/types.js'
+import type { DebateMessage } from '../orchestrator/types.js'
 
 export type SessionStatus = 'planning' | 'in_progress' | 'completed' | 'paused'
 
@@ -32,7 +33,7 @@ export interface DiscussRound {
   roundNumber: number
   topic: string
   analysis: string
-  messages: Array<{ reviewerId: string; content: string; timestamp: Date }>
+  messages: DebateMessage[]
   conclusion: string
   verifiedConclusion?: string
   convergedAtRound?: number
