@@ -114,6 +114,15 @@ export interface OrchestratorOptions {
   skipConclusion?: boolean  // Skip getFinalConclusion + old verifyConclusion (bot mode)
 }
 
+export type VerificationStatus = 'verified' | 'false_positive' | 'pre_existing' | 'needs_manual_review'
+
+export interface IssueVerification {
+  status: VerificationStatus
+  severity: ReviewIssue['severity']
+  reason: string
+  evidence: string
+}
+
 /** Structured issue from a reviewer */
 export interface ReviewIssue {
   severity: 'critical' | 'high' | 'medium' | 'low' | 'nitpick'
@@ -150,4 +159,11 @@ export interface MergedIssue extends ReviewIssue {
   raisedBy: string[]       // reviewer IDs who found this issue
   descriptions: string[]   // each reviewer's description
   sources: IssueSource[]   // exact review messages that raised this issue
+  verification?: IssueVerification
+  publishable?: boolean
+}
+
+export type VerifiedIssue = MergedIssue & {
+  verification: IssueVerification
+  publishable: boolean
 }

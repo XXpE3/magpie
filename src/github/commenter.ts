@@ -11,6 +11,7 @@ export interface ReviewCommentInput {
   path: string
   line?: number
   body: string
+  publishable?: boolean
 }
 
 export interface ClassifiedComment {
@@ -340,7 +341,7 @@ export function classifyComments(
 
   const patchMap = (diffInfo as DiffInfoWithPatches).__patches ?? new Map<string, string>()
 
-  return comments.map(c => {
+  return comments.filter(c => c.publishable !== false).map(c => {
     const fileLines = diffInfo.get(c.path)
     if (fileLines && c.line != null && fileLines.has(c.line)) {
       return { input: c, mode: 'inline' as const }
@@ -443,6 +444,11 @@ export function postReview(
 
   // Build payloads based on pre-classified modes, skipping duplicates
   for (const { input: c, mode } of classified) {
+    if (c.publishable === false) {
+      details.push({ path: c.path, line: c.line, success: true, mode: 'skipped' })
+      continue
+    }
+
     if (isDuplicateComment(c, existingComments)) {
       details.push({ path: c.path, line: c.line, success: true, mode: 'skipped' })
       continue
