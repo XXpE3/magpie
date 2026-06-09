@@ -34,7 +34,8 @@ describe('ReviewIssue types', () => {
       title: 'Unbounded query',
       description: 'No LIMIT clause',
       raisedBy: ['claude-code', 'gemini-cli'],
-      descriptions: ['No LIMIT clause']
+      descriptions: ['No LIMIT clause'],
+      sources: [{ reviewerId: 'claude-code', round: 1, messageIndex: 0 }]
     }
     expect(merged.raisedBy).toHaveLength(2)
   })

@@ -9,12 +9,13 @@ import type {
   TokenUsage,
   ReviewerStatus,
   MergedIssue,
+  IssueCandidate,
   ReviewTarget,
   ReviewTargetPayload
 } from './types.js'
 import type { ContextGatherer } from '../context-gatherer/gatherer.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
-import { parseReviewerOutput, parseFocusAreas } from './issue-parser.js'
+import { parseReviewerOutput, parseFocusAreas, deduplicateIssues } from './issue-parser.js'
 import { formatCallChainForReviewer } from '../context-gatherer/collectors/reference-collector.js'
 import { logger } from '../utils/logger.js'
 
@@ -32,6 +33,43 @@ class ForceProceedError extends Error {
 
 function isForceProceedError(error: unknown): boolean {
   return error instanceof ForceProceedError
+}
+
+function rawReviewerOutputIssueCount(response: string): number | undefined {
+  const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/)
+  let jsonStr = jsonMatch?.[1]
+
+  if (!jsonStr) {
+    const rawMatch = response.match(/\{[\s\S]*"issues"\s*:\s*\[[\s\S]*\][\s\S]*\}/)
+    if (rawMatch) jsonStr = rawMatch[0]
+  }
+
+  if (!jsonStr) return undefined
+
+  try {
+    const parsed = JSON.parse(jsonStr)
+    return Array.isArray(parsed.issues) ? parsed.issues.length : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function formatPriorIssueContext(candidates: IssueCandidate[]): string {
+  if (candidates.length === 0) return ''
+
+  const issues = deduplicateIssues(candidates)
+  const issueText = issues.map((issue, index) => {
+    const loc = issue.line ? `${issue.file}:${issue.line}` : issue.file
+    const sources = issue.sources
+      .map(source => `${source.reviewerId}${source.round == null ? '' : ` round ${source.round}`}`)
+      .join(', ')
+    const description = issue.description.length > 500
+      ? `${issue.description.slice(0, 500)}…`
+      : issue.description
+    return `${index + 1}. [${issue.severity}] ${loc} — ${issue.title}\nDescription: ${description}\nSources: ${sources}`
+  }).join('\n\n')
+
+  return `\n\nPreviously extracted issues for reference only:\n\n${issueText}\n\nUse the previous issues only to resolve references in the current message. If the current message agrees with or confirms a previous issue, emit that issue using the previous file/title details and the current reviewer as the source. Do not emit previous issues that the current message does not mention, confirm, or discuss.`
 }
 
 interface VisibleConversationMessage {
@@ -1203,20 +1241,11 @@ Previous rounds discussion:`
   /** Use AI to extract structured issues from unstructured review text.
    *  Retries with feedback if the first attempt produces invalid JSON. */
   private async structurizeIssues(): Promise<MergedIssue[]> {
-    // Collect last round of messages from each reviewer
-    const lastMessages = new Map<string, string>()
-    for (const msg of this.conversationHistory) {
-      if (msg.reviewerId === 'user') continue
-      lastMessages.set(msg.reviewerId, msg.content)
-    }
+    const reviewMessages = this.conversationHistory
+      .map((message, index) => ({ message, index }))
+      .filter(({ message }) => this.isSuccessfulReviewMessage(message))
 
-    if (lastMessages.size === 0) return []
-
-    const reviewText = [...lastMessages.entries()]
-      .map(([id, content]) => `[${id}]:\n${content}`)
-      .join('\n\n---\n\n')
-
-    const reviewerIds = [...lastMessages.keys()].join(', ')
+    if (reviewMessages.length === 0) return []
 
     // Extract changed files and valid line ranges from the diff to constrain structurizer output
     const changedFiles = extractChangedFiles(this.taskPrompt)
@@ -1229,9 +1258,22 @@ Previous rounds discussion:`
       }
     }
 
-    const basePrompt = `Based on these code review discussions, extract ALL concrete issues mentioned by the reviewers into a structured JSON format.
+    const systemPrompt = 'You extract structured issues from one code review message. Output only valid JSON.'
+    const chatOpts = { disableTools: true }
+    const maxAttempts = 3
+    const candidates: IssueCandidate[] = []
 
-${reviewText}
+    for (const { message, index } of reviewMessages) {
+      const roundLabel = message.round == null ? 'unknown' : String(message.round)
+      const priorIssueContext = formatPriorIssueContext(candidates)
+      const basePrompt = `Extract concrete issues from this single code review message into structured JSON.
+
+Reviewer ID: ${message.reviewerId}
+Round: ${roundLabel}
+
+Review message:
+
+${message.content}${priorIssueContext}
 
 Output ONLY a JSON block (no other text):
 \`\`\`json
@@ -1244,20 +1286,18 @@ Output ONLY a JSON block (no other text):
       "line": 42,
       "title": "One-line summary",
       "description": "Concise explanation for GitHub PR comment (see rules below)",
-      "suggestedFix": "Brief one-line fix summary",
-      "raisedBy": ["reviewer-id-1", "reviewer-id-2"]
+      "suggestedFix": "Brief one-line fix summary"
     }
   ]
 }
 \`\`\`
 
 Rules:
-- Include every issue mentioned by any reviewer
+- Include every concrete issue mentioned in this message.
 - The "description" field will be posted directly as a GitHub PR inline comment. Keep it concise: (1) What the problem is, (2) Concrete impact or risk, (3) Fix suggestion if non-obvious. Reference line numbers instead of quoting large code blocks.
 - "category" MUST be one of the 12 values listed above. Choose the closest match, do not invent new categories.
-- If multiple reviewers mention the same issue, list all their IDs in raisedBy
-- Use the exact reviewer IDs: ${reviewerIds}
-- If a file path or line number is mentioned, include it; otherwise omit the field
+- If the message has no concrete issues, return {"issues":[]}.
+- If a file path or line number is mentioned, include it; otherwise omit the field.
 - Severity (STRICT — when in doubt, choose LOWER):
   critical = compilation failure, data corruption, exploitable security hole, guaranteed crash
   high = logic error that WILL trigger, resource leak, real concurrency bug
@@ -1265,56 +1305,58 @@ Rules:
   low = code quality, minor concern
   nitpick = style only${changedFilesConstraint}${this.options.language ? `\n- Write the "title", "description", and "suggestedFix" fields in ${this.options.language}. Keep JSON keys and severity/category values in English.` : ''}`
 
-    const systemPrompt = 'You extract structured issues from code review text. Output only valid JSON.'
-    const chatOpts = { disableTools: true }
-    const maxAttempts = 3
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          this.options.onWaiting?.('structurizer')
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        this.options.onWaiting?.('structurizer')
+          const prompt = attempt === 1
+            ? basePrompt
+            : `Your previous response was not valid JSON, had an invalid issues array, or omitted required fields from extracted issues. Output ONLY a fenced JSON block with an issues array. No other text.
 
-        let prompt: string
-        if (attempt === 1) {
-          prompt = basePrompt
-        } else {
-          // Retry: tell the AI its previous output was not valid JSON
-          prompt = `Your previous response was not valid JSON. Output ONLY a fenced JSON block with the issues array. No other text.
+Review message from ${message.reviewerId}, round ${roundLabel}:
 
-Here are the review discussions again:
-
-${reviewText}
+${message.content}${priorIssueContext}
 
 Required JSON format:
 \`\`\`json
-{"issues": [{"severity": "critical|high|medium|low|nitpick", "category": "string", "file": "path", "title": "summary", "description": "details", "raisedBy": ["${reviewerIds.split(', ')[0]}"]}]}
-\`\`\`
-Use reviewer IDs: ${reviewerIds}`
-        }
+{"issues": [{"severity": "critical|high|medium|low|nitpick", "category": "string", "file": "path", "title": "summary", "description": "details"}]}
+\`\`\``
 
-        const messages: Message[] = [{ role: 'user', content: prompt }]
-        const response = await this.trackedPromise(
-          'structurizer',
-          'structurizer',
-          'extracting issues',
-          () => this.summarizer.provider.chat(messages, systemPrompt, chatOpts)
-        )
-        this.trackTokens('summarizer', prompt, response)
+          const messages: Message[] = [{ role: 'user', content: prompt }]
+          this.summarizer.provider.endSession?.()
+          const response = await this.trackedPromise(
+            'structurizer',
+            'structurizer',
+            'extracting issues',
+            () => this.summarizer.provider.chat(messages, systemPrompt, chatOpts)
+          )
+          this.trackTokens('summarizer', prompt, response)
 
-        const parsed = parseReviewerOutput(response)
-        if (parsed && parsed.issues.length > 0) {
-          return parsed.issues.map(issue => ({
-            ...issue,
-            raisedBy: issue.raisedBy || ['summarizer'],
-            descriptions: [issue.description]
-          }))
+          const parsed = parseReviewerOutput(response)
+          if (parsed) {
+            const rawIssueCount = rawReviewerOutputIssueCount(response)
+            if (parsed.issues.length > 0 || rawIssueCount === 0) {
+              for (const issue of parsed.issues) {
+                candidates.push({
+                  reviewerId: message.reviewerId,
+                  round: message.round,
+                  messageIndex: index,
+                  issue
+                })
+              }
+              break
+            }
+          }
+          // Parse failed or all emitted issues were filtered — will retry if attempts remain.
+        } catch {
+          this.summarizer.provider.endSession?.()
+          // Call failed — will retry if attempts remain, then continue with the next message.
         }
-        // Parse failed — will retry if attempts remain
-      } catch {
-        // Call failed — will retry if attempts remain
       }
     }
 
-    return []
+    this.summarizer.provider.endSession?.()
+    return deduplicateIssues(candidates)
   }
 
   private async getFinalConclusion(): Promise<string> {

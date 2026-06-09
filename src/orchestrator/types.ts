@@ -128,6 +128,16 @@ export interface ReviewIssue {
   raisedBy?: string[]  // preserved from structurizer output
 }
 
+export interface IssueSource {
+  reviewerId: string
+  round?: number
+  messageIndex: number
+}
+
+export interface IssueCandidate extends IssueSource {
+  issue: ReviewIssue
+}
+
 /** Structured output from a reviewer (parsed from JSON block in response) */
 export interface ReviewerOutput {
   issues: ReviewIssue[]
@@ -139,4 +149,5 @@ export interface ReviewerOutput {
 export interface MergedIssue extends ReviewIssue {
   raisedBy: string[]       // reviewer IDs who found this issue
   descriptions: string[]   // each reviewer's description
+  sources: IssueSource[]   // exact review messages that raised this issue
 }
