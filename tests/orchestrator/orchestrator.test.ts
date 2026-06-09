@@ -103,4 +103,65 @@ describe('DebateOrchestrator', () => {
       'You are A'
     )
   })
+
+  it('extracts issues from all review rounds and deduplicates with source rounds', async () => {
+    const reviewerA: Reviewer = {
+      id: 'reviewer-1',
+      provider: createMockProvider('a', [
+        'Round 1 issue from reviewer 1: src/auth.ts line 42 has SQL injection risk',
+        'Round 2 from reviewer 1: no additional issues'
+      ]),
+      systemPrompt: 'You are reviewer A'
+    }
+    const reviewerB: Reviewer = {
+      id: 'reviewer-2',
+      provider: createMockProvider('b', [
+        'Round 1 duplicate from reviewer 2: src/auth.ts line 42 has SQL injection vulnerability',
+        'Round 2 from reviewer 2: no additional issues'
+      ]),
+      systemPrompt: 'You are reviewer B'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider('s', [
+        '```json\n{"issues":[{"severity":"high","category":"security","file":"src/auth.ts","line":42,"title":"SQL injection risk","description":"Query concatenates user input"}]}\n```',
+        '```json\n{"issues":[{"severity":"medium","category":"security","file":"src/auth.ts","line":42,"title":"SQL injection vulnerability","description":"Query concatenates user input"}]}\n```',
+        '```json\n{"issues":[]}\n```',
+        'plain text without json',
+        'still not json',
+        'not json either',
+        '```json\n{"verified":[{"index":0,"severity":"high","reason":"verified"}]}\n```'
+      ]),
+      systemPrompt: 'You are a summarizer'
+    }
+    const analyzer: Reviewer = {
+      id: 'analyzer',
+      provider: createMockProvider('analyzer', ['PR analysis result']),
+      systemPrompt: 'You are an analyzer'
+    }
+
+    const orchestrator = new DebateOrchestrator(
+      [reviewerA, reviewerB],
+      summarizer,
+      analyzer,
+      { maxRounds: 2, interactive: false, checkConvergence: false, skipConclusion: true }
+    )
+
+    const result = await orchestrator.run('123', 'Review this PR')
+
+    expect(result.parsedIssues).toHaveLength(1)
+    expect(result.parsedIssues![0].raisedBy).toEqual(['reviewer-1', 'reviewer-2'])
+    expect(result.parsedIssues![0].sources).toEqual([
+      { reviewerId: 'reviewer-1', round: 1, messageIndex: 0 },
+      { reviewerId: 'reviewer-2', round: 1, messageIndex: 1 }
+    ])
+
+    const summarizerChat = vi.mocked(summarizer.provider.chat)
+    const firstExtractionPrompt = summarizerChat.mock.calls[0][0][0].content
+    const secondExtractionPrompt = summarizerChat.mock.calls[1][0][0].content
+    expect(firstExtractionPrompt).toContain('Round 1 issue from reviewer 1')
+    expect(firstExtractionPrompt).not.toContain('Round 1 duplicate from reviewer 2')
+    expect(secondExtractionPrompt).toContain('Round 1 duplicate from reviewer 2')
+    expect(secondExtractionPrompt).not.toContain('Round 1 issue from reviewer 1')
+  })
 })

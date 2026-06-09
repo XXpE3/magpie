@@ -99,6 +99,30 @@ describe('deduplicateIssues', () => {
     expect(merged[0].severity).toBe('critical')
     expect(merged[1].severity).toBe('low')
   })
+
+  it('should preserve candidate source rounds when merging', () => {
+    const merged = deduplicateIssues([
+      {
+        reviewerId: 'claude',
+        round: 1,
+        messageIndex: 0,
+        issue: { severity: 'high' as const, category: 'security', file: 'src/auth.ts', line: 42, title: 'SQL injection risk', description: 'From claude' }
+      },
+      {
+        reviewerId: 'gemini',
+        round: 2,
+        messageIndex: 3,
+        issue: { severity: 'medium' as const, category: 'security', file: 'src/auth.ts', line: 42, title: 'SQL injection vulnerability', description: 'From gemini' }
+      }
+    ])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0].raisedBy).toEqual(['claude', 'gemini'])
+    expect(merged[0].sources).toEqual([
+      { reviewerId: 'claude', round: 1, messageIndex: 0 },
+      { reviewerId: 'gemini', round: 2, messageIndex: 3 }
+    ])
+  })
 })
 
 describe('parseFocusAreas', () => {

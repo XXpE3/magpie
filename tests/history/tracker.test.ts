@@ -21,7 +21,8 @@ describe('HistoryTracker', () => {
 
   const makeIssue = (title: string, file: string, severity = 'high' as const): MergedIssue => ({
     severity, category: 'test', file, title,
-    description: 'desc', raisedBy: ['claude'], descriptions: ['desc']
+    description: 'desc', raisedBy: ['claude'], descriptions: ['desc'],
+    sources: [{ reviewerId: 'claude', round: 1, messageIndex: 0 }]
   })
 
   it('should save and load review', async () => {

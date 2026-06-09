@@ -1,5 +1,5 @@
 // src/orchestrator/issue-parser.ts
-import type { ReviewIssue, ReviewerOutput, MergedIssue } from './types.js'
+import type { ReviewIssue, ReviewerOutput, MergedIssue, IssueCandidate, IssueSource } from './types.js'
 
 const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'nitpick'] as const
 const VALID_VERDICTS = ['approve', 'request_changes', 'comment'] as const
@@ -64,37 +64,60 @@ export function parseReviewerOutput(response: string): ReviewerOutput | null {
   }
 }
 
-/**
- * Deduplicate issues across multiple reviewers.
- * Issues with the same file + overlapping line + similar title are merged.
- * Merged issues keep the highest severity and track all contributing reviewers.
- */
-export function deduplicateIssues(
-  issuesByReviewer: Map<string, ReviewIssue[]>
-): MergedIssue[] {
-  const merged: MergedIssue[] = []
-
+function issueCandidatesFromReviewerMap(issuesByReviewer: Map<string, ReviewIssue[]>): IssueCandidate[] {
+  const candidates: IssueCandidate[] = []
   for (const [reviewerId, issues] of issuesByReviewer) {
     for (const issue of issues) {
-      const existing = merged.find(m => isSimilarIssue(m, issue))
-      if (existing) {
-        existing.raisedBy.push(reviewerId)
-        existing.descriptions.push(issue.description)
-        // Keep highest severity
-        if (SEVERITY_ORDER[issue.severity] < SEVERITY_ORDER[existing.severity]) {
-          existing.severity = issue.severity
-        }
-        // Keep suggested fix if we don't have one
-        if (!existing.suggestedFix && issue.suggestedFix) {
-          existing.suggestedFix = issue.suggestedFix
-        }
-      } else {
-        merged.push({
-          ...issue,
-          raisedBy: [reviewerId],
-          descriptions: [issue.description]
-        })
+      candidates.push({ reviewerId, messageIndex: 0, issue })
+    }
+  }
+  return candidates
+}
+
+function sourceFromCandidate(candidate: IssueCandidate): IssueSource {
+  const source: IssueSource = {
+    reviewerId: candidate.reviewerId,
+    messageIndex: candidate.messageIndex
+  }
+  if (candidate.round != null) source.round = candidate.round
+  return source
+}
+
+/**
+ * Deduplicate issues across reviewers and review rounds.
+ * Issues with the same file + overlapping line + similar title are merged.
+ * Merged issues keep the highest severity and track all contributing sources.
+ */
+export function deduplicateIssues(
+  issues: Map<string, ReviewIssue[]> | IssueCandidate[]
+): MergedIssue[] {
+  const candidates = Array.isArray(issues) ? issues : issueCandidatesFromReviewerMap(issues)
+  const merged: MergedIssue[] = []
+
+  for (const candidate of candidates) {
+    const issue = candidate.issue
+    const existing = merged.find(m => isSimilarIssue(m, issue))
+    if (existing) {
+      if (!existing.raisedBy.includes(candidate.reviewerId)) {
+        existing.raisedBy.push(candidate.reviewerId)
       }
+      existing.descriptions.push(issue.description)
+      existing.sources.push(sourceFromCandidate(candidate))
+      // Keep highest severity
+      if (SEVERITY_ORDER[issue.severity] < SEVERITY_ORDER[existing.severity]) {
+        existing.severity = issue.severity
+      }
+      // Keep suggested fix if we don't have one
+      if (!existing.suggestedFix && issue.suggestedFix) {
+        existing.suggestedFix = issue.suggestedFix
+      }
+    } else {
+      merged.push({
+        ...issue,
+        raisedBy: [candidate.reviewerId],
+        descriptions: [issue.description],
+        sources: [sourceFromCandidate(candidate)]
+      })
     }
   }
 
