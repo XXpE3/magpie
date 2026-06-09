@@ -36,6 +36,33 @@ describe('RepoScanner', () => {
     expect(files[0].lines).toBe(3)
   })
 
+  it('should scan the real directory when repo root is a symlink', async () => {
+    vi.mocked(fs.realpathSync).mockImplementation((p) => {
+      const filePath = String(p)
+      if (filePath === '/repo-link') return '/repo-real' as any
+      return filePath as any
+    })
+    vi.mocked(fs.readdirSync).mockImplementation((p) => {
+      if (String(p) === '/repo-real') return ['index.ts'] as any
+      return [] as any
+    })
+    vi.mocked(fs.lstatSync).mockImplementation((p) => ({
+      isSymbolicLink: () => false,
+      isDirectory: () => false,
+      isFile: () => String(p).endsWith('.ts'),
+      size: 1024,
+      mtimeMs: 123
+    }) as any)
+    vi.mocked(fs.readFileSync).mockReturnValue('line1\nline2')
+
+    const scanner = new RepoScanner('/repo-link')
+    const files = await scanner.scanFiles()
+
+    expect(files).toHaveLength(1)
+    expect(files[0].path).toBe('/repo-real/index.ts')
+    expect(files[0].relativePath).toBe('index.ts')
+  })
+
   it('should reject scan paths outside the repo root', async () => {
     const scanner = new RepoScanner('/project', { path: '../../etc' })
 

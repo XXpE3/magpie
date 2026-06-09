@@ -31,7 +31,7 @@ export class RepoScanner {
       throw new Error(`Scan path must stay within repository root: ${this.options.path}`)
     }
 
-    this.scanDirectory(targetPath)
+    this.scanDirectory(targetRealPath)
     return this.files
   }
 
@@ -50,7 +50,7 @@ export class RepoScanner {
 
     for (const entry of entries) {
       const fullPath = path.join(dirPath, entry)
-      const relativePath = path.relative(this.rootPath, fullPath)
+      const relativePath = path.relative(this.rootRealPath, fullPath)
 
       if (shouldIgnore(relativePath, this.options.ignore || [])) {
         continue

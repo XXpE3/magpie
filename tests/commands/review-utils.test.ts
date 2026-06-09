@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { MergedIssue, VerificationStatus } from '../../src/orchestrator/types.js'
 import { isIssuePublishable, requiresManualPublishReview } from '../../src/commands/review/utils.js'
+import { getReviewFeatureDisplayIndex } from '../../src/commands/review/repo-review.js'
 
 function issue(status: VerificationStatus, publishable = true): MergedIssue {
   return {
@@ -37,5 +38,12 @@ describe('review issue publishability helpers', () => {
 
   it('does not publish pre-existing issues by default', () => {
     expect(isIssuePublishable(issue('pre_existing', false))).toBe(false)
+  })
+})
+
+describe('repo review progress helpers', () => {
+  it('uses the completed count captured before the remaining plan starts', () => {
+    expect(getReviewFeatureDisplayIndex(1, 0)).toBe(2)
+    expect(getReviewFeatureDisplayIndex(1, 1)).toBe(3)
   })
 })

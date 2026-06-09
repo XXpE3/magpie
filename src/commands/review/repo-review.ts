@@ -120,6 +120,11 @@ export async function askResume(session: ReviewSession): Promise<boolean> {
   return answer.trim() !== '2'
 }
 
+export function getReviewFeatureDisplayIndex(completedBeforeRun: number, remainingIndex: number): number {
+  return completedBeforeRun + remainingIndex + 1
+}
+
+
 export async function handleRepoReview(options: { path?: string; ignore?: string[]; reanalyze?: boolean; reviewers?: string; all?: boolean; [key: string]: unknown }, config: MagpieConfig, spinner: ReturnType<typeof ora>): Promise<void> {
   const cwd = process.cwd()
   const stateManager = new StateManager(cwd)
@@ -342,10 +347,12 @@ export async function executeFeatureReview(
   process.on('SIGINT', cleanup)
   process.on('SIGTERM', cleanup)
 
+  const completedBeforeRun = session.progress.completedFeatures.length
+
   const orchestrator = new RepoOrchestrator(reviewers, summarizer, {
     focusAreas: session.config.focusAreas,
     onStepStart: (step, i, total) => {
-      const globalIndex = session.progress.completedFeatures.length + i + 1
+      const globalIndex = getReviewFeatureDisplayIndex(completedBeforeRun, i)
       const globalTotal = session.config.selectedFeatures.length
       console.log(chalk.cyan(`\n[${globalIndex}/${globalTotal}] Reviewing ${step.name}...`))
     },
