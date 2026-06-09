@@ -76,10 +76,14 @@ export class MarkdownReporter {
 
   private formatIssueTable(issues: ReviewIssue[]): string {
     const lines: string[] = []
-    lines.push('| # | Location | Issue | Consensus |')
-    lines.push('|---|----------|-------|-----------|')
+    lines.push('| # | Location | Issue | Consensus | Verification | Reason | Evidence |')
+    lines.push('|---|----------|-------|-----------|--------------|--------|----------|')
     for (const issue of issues) {
-      lines.push(`| ${issue.id} | ${issue.location} | ${issue.description} | ${issue.consensus} |`)
+      const verification = issue.verification
+      const status = verification?.status ?? 'unverified'
+      const reason = verification?.reason ?? ''
+      const evidence = verification?.evidence ?? ''
+      lines.push(`| ${issue.id} | ${issue.location} | ${issue.description} | ${issue.consensus} | ${status} | ${reason} | ${evidence} |`)
     }
     return lines.join('\n')
   }

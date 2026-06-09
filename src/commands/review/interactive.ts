@@ -7,7 +7,7 @@ import type { Message } from '../../providers/types.js'
 import type { Reviewer, MergedIssue, DebateResult } from '../../orchestrator/types.js'
 import { buildReviewTargetPayload } from '../../orchestrator/orchestrator.js'
 import type { ReviewTarget, ReviewerSessionState } from './types.js'
-import { fixMarkdown, formatIssueForGitHub } from './utils.js'
+import { fixMarkdown, formatIssueForGitHub, formatVerificationLabel, isIssuePublishable, requiresManualPublishReview } from './utils.js'
 
 // Interactive reviewer selection
 export async function selectReviewers(availableIds: string[], rl?: ReturnType<typeof createInterface>): Promise<string[]> {
@@ -395,6 +395,9 @@ export async function interactiveGeneralDiscussion(
           : chalk.yellow(' … pending')
         console.log(`  ${String(i + 1).padStart(3)}.${status} ${color(`[${issue.severity.toUpperCase().padEnd(8)}]`)} ${issue.title}`)
         console.log(chalk.dim(`       ${location}  [${issue.raisedBy.join(', ')}]`))
+        if (issue.verification) {
+          console.log(chalk.dim(`       verification: ${formatVerificationLabel(issue)} — ${issue.verification.reason}`))
+        }
       }
       console.log()
       continue
@@ -407,7 +410,11 @@ export async function interactiveGeneralDiscussion(
       let indices: number[]
 
       if (arg === 'all') {
-        indices = issues.map((_, i) => i).filter(i => !result.resolvedIndices.has(i))
+        indices = issues.map((_, i) => i).filter(i =>
+          !result.resolvedIndices.has(i) &&
+          isIssuePublishable(issues[i]) &&
+          !requiresManualPublishReview(issues[i])
+        )
       } else {
         indices = arg.split(',').map(s => parseInt(s.trim(), 10) - 1)
         const invalid = indices.filter(i => i < 0 || i >= issues.length)
@@ -420,6 +427,10 @@ export async function interactiveGeneralDiscussion(
       let count = 0
       for (const idx of indices) {
         if (result.resolvedIndices.has(idx)) continue
+        if (!isIssuePublishable(issues[idx])) {
+          result.resolvedIndices.add(idx)
+          continue
+        }
         result.approvedComments.push({ issue: issues[idx], comment: formatIssueForGitHub(issues[idx]) })
         result.resolvedIndices.add(idx)
         count++
@@ -601,10 +612,15 @@ export async function interactiveGeneralDiscussion(
       })
       const act = action.trim().toLowerCase()
       if (act === 'p') {
-        const comment = formatIssueForGitHub(issue)
-        result.approvedComments.push({ issue, comment })
-        result.resolvedIndices.add(idx)
-        console.log(chalk.green(`  ✓ Issue #${idx + 1} queued for posting.`))
+        if (!isIssuePublishable(issue)) {
+          result.resolvedIndices.add(idx)
+          console.log(chalk.dim(`  Issue #${idx + 1} is not publishable.`))
+        } else {
+          const comment = formatIssueForGitHub(issue)
+          result.approvedComments.push({ issue, comment })
+          result.resolvedIndices.add(idx)
+          console.log(chalk.green(`  ✓ Issue #${idx + 1} queued for posting.`))
+        }
       } else if (act === 's') {
         result.resolvedIndices.add(idx)
         console.log(chalk.dim(`  ✓ Issue #${idx + 1} skipped.`))
@@ -692,7 +708,7 @@ export async function interactiveCommentReview(
   }
   process.on('unhandledRejection', rejectHandler)
 
-  const approved: { issue: MergedIssue; comment: string }[] = [...(preApproved || [])]
+  let approved: { issue: MergedIssue; comment: string }[] = [...(preApproved || [])]
   const stats = { posted: 0, edited: 0, discussed: 0, skipped: 0 }
   const sessions = reviewerSessions ?? new Map<string, ReviewerSessionState>()
 
@@ -754,12 +770,21 @@ export async function interactiveCommentReview(
     console.log(chalk.bold(`\n${'─'.repeat(50)}`))
     console.log(color(`  ${i + 1}/${issues.length} [${issue.severity.toUpperCase()}] ${issue.title}`))
     console.log(chalk.dim(`  ${location}  [${issue.raisedBy.join(', ')}]`))
+    if (issue.verification) {
+      console.log(chalk.dim(`  verification: ${formatVerificationLabel(issue)} — ${issue.verification.reason}`))
+      if (issue.verification.evidence) console.log(chalk.dim(`  evidence: ${issue.verification.evidence}`))
+    }
     if (i > 0) console.log(showProgress(i))
     console.log()
     // Render description as markdown for rich display (code blocks, formatting)
     console.log(marked(fixMarkdown(issue.description)))
     if (issue.suggestedFix) {
       console.log(chalk.green(`  Fix: ${issue.suggestedFix}`))
+    }
+    if (!isIssuePublishable(issue)) {
+      stats.skipped++
+      console.log(chalk.dim('  Skipped: verification marked this issue as not publishable.'))
+      continue
     }
 
     const action = await new Promise<string>(resolve => {
@@ -1075,8 +1100,9 @@ export async function interactiveCommentReview(
   }
 
   // Batch post
+  approved = approved.filter(({ issue }) => isIssuePublishable(issue))
   if (approved.length === 0) {
-    console.log(chalk.dim('\nNo comments to post.'))
+    console.log(chalk.dim('\nNo publishable comments to post.'))
     return
   }
 
@@ -1102,6 +1128,7 @@ export async function interactiveCommentReview(
         path: issue.file,
         line: issue.line,
         body: comment,
+        publishable: isIssuePublishable(issue),
       }))
 
       // Classify comments against the PR diff

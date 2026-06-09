@@ -11,7 +11,8 @@ import type {
   MergedIssue,
   IssueCandidate,
   ReviewTarget,
-  ReviewTargetPayload
+  ReviewTargetPayload,
+  VerificationStatus
 } from './types.js'
 import type { ContextGatherer } from '../context-gatherer/gatherer.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
@@ -34,6 +35,43 @@ class ForceProceedError extends Error {
 function isForceProceedError(error: unknown): boolean {
   return error instanceof ForceProceedError
 }
+
+function extractJsonObject(text: string): string | null {
+  const fenced = text.match(/```json\s*([\s\S]*?)\s*```/)
+  const source = (fenced?.[1] ?? text).trim()
+  const start = source.indexOf('{')
+  if (start < 0) return null
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let i = start; i < source.length; i++) {
+    const ch = source[i]
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (ch === '\\') {
+        escaped = true
+      } else if (ch === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (ch === '"') {
+      inString = true
+    } else if (ch === '{') {
+      depth++
+    } else if (ch === '}') {
+      depth--
+      if (depth === 0) return source.slice(start, i + 1)
+    }
+  }
+
+  return null
+}
+
 
 function rawReviewerOutputIssueCount(response: string): number | undefined {
   const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/)
@@ -1453,22 +1491,45 @@ For EACH issue below:
 1. Use Read/Grep/Glob to check the actual code and verify the claim is accurate
 2. Check if the issue is truly introduced by this PR, or pre-existing
 3. Check if the pattern is intentional/by-design (grep for similar patterns in the codebase)
-4. Re-score the severity using these strict definitions:
+4. Assign one verification status:
+   - verified: the issue is real and introduced by this PR
+   - false_positive: the issue is not actually present
+   - pre_existing: the issue is real, but existed before this PR
+   - needs_manual_review: evidence is inconclusive or publishing needs a human decision
+5. Re-score the severity using these strict definitions:
    - critical: Compilation failure, data corruption, exploitable security hole, guaranteed crash
    - high: Logic error that WILL trigger under realistic conditions, resource leak, real concurrency bug
    - medium: Edge case that COULD trigger, missing error handling, compatibility risk
    - low: Code quality, minor concern, pre-existing issue
-   - nitpick: Style only, or false positive (issue does not actually exist)
+   - nitpick: Style only
 
 Agreement signal: Issues raised by BOTH reviewers have higher prior probability of being real.
 Issues raised by only ONE reviewer should be scrutinized more carefully.
+
+Publishing policy:
+- verified issues are publishable.
+- false_positive issues are not publishable.
+- pre_existing issues are not publishable as PR inline comments by default.
+- needs_manual_review issues require explicit human confirmation before publishing.
 
 Output ONLY a JSON block:
 \`\`\`json
 {
   "verified": [
-    {"index": 0, "severity": "high", "reason": "Verified: null deref confirmed at line 42"},
-    {"index": 1, "severity": "nitpick", "reason": "False positive: caller already validates input at line 30"}
+    {
+      "index": 0,
+      "status": "verified",
+      "severity": "high",
+      "reason": "Verified: null dereference can happen when config is absent.",
+      "evidence": "src/config.ts:42 reads config.value without a null check."
+    },
+    {
+      "index": 1,
+      "status": "false_positive",
+      "severity": "nitpick",
+      "reason": "Caller validates input before reaching this function.",
+      "evidence": "src/auth.ts:30 returns early when input is missing."
+    }
   ]
 }
 \`\`\`
@@ -1493,25 +1554,91 @@ ${issuesText}${this.langSuffix}`
       )
       this.trackTokens('verifier', prompt + (systemPrompt || ''), response)
 
-      // Parse the verification result
-      const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/)
-      const jsonStr = jsonMatch?.[1] || response
-      const match = jsonStr.match(/\{[\s\S]*"verified"\s*:\s*\[[\s\S]*?\]\s*\}/)
-      if (match) {
-        const parsed = JSON.parse(match[0])
-        if (Array.isArray(parsed.verified)) {
-          // Apply verified severities back to issues
-          for (const v of parsed.verified) {
-            const idx = v.index
-            if (idx >= 0 && idx < issues.length && typeof v.severity === 'string') {
-              issues[idx].severity = v.severity as MergedIssue['severity']
-            }
+      const markAllForManualReview = (reason: string, evidence: string) => {
+        for (const issue of issues) {
+          issue.verification = {
+            status: 'needs_manual_review',
+            severity: issue.severity,
+            reason,
+            evidence,
           }
-          logger.info(`Verified ${parsed.verified.length} issues`)
+          issue.publishable = true
         }
       }
+
+      // Parse the verification result. Do not use a regex for the full object:
+      // verifier evidence may itself contain arrays or nested objects.
+      const jsonStr = extractJsonObject(response)
+      if (!jsonStr) {
+        markAllForManualReview(
+          'Verifier returned malformed JSON; manual review required.',
+          'No JSON object was found in the verifier response.'
+        )
+        logger.warn('Issue verification failed: verifier returned no JSON object')
+        return
+      }
+
+      const parsed = JSON.parse(jsonStr)
+      if (!Array.isArray(parsed.verified)) {
+        markAllForManualReview(
+          'Verifier returned JSON without a verified array; manual review required.',
+          'Missing verified array in verifier response.'
+        )
+        logger.warn('Issue verification failed: verifier returned JSON without a verified array')
+        return
+      }
+
+      const seen = new Set<number>()
+      const validStatuses = new Set(['verified', 'false_positive', 'pre_existing', 'needs_manual_review'])
+      const validSeverities = new Set(['critical', 'high', 'medium', 'low', 'nitpick'])
+
+      for (const v of parsed.verified) {
+        const idx = v.index
+        if (idx < 0 || idx >= issues.length) continue
+
+        const issue = issues[idx]
+        const status = validStatuses.has(v.status) ? v.status : 'needs_manual_review'
+        const severity = validSeverities.has(v.severity) ? v.severity : issue.severity
+        const reason = typeof v.reason === 'string' && v.reason.trim()
+          ? v.reason.trim()
+          : 'Verifier did not provide a reason.'
+        const evidence = Array.isArray(v.evidence)
+          ? v.evidence.filter((e: unknown) => typeof e === 'string' && e.trim()).join('; ')
+          : typeof v.evidence === 'string' ? v.evidence.trim() : ''
+
+        issue.severity = severity as MergedIssue['severity']
+        issue.verification = {
+          status: status as VerificationStatus,
+          severity: issue.severity,
+          reason,
+          evidence,
+        }
+        issue.publishable = status === 'verified' || status === 'needs_manual_review'
+        seen.add(idx)
+      }
+
+      for (let i = 0; i < issues.length; i++) {
+        if (seen.has(i)) continue
+        issues[i].verification = {
+          status: 'needs_manual_review',
+          severity: issues[i].severity,
+          reason: 'Verifier did not return this issue; manual review required.',
+          evidence: '',
+        }
+        issues[i].publishable = true
+      }
+
+      logger.info(`Verified ${parsed.verified.length} issues`)
     } catch (err) {
-      // Verification failure is non-fatal — keep original severities
+      for (const issue of issues) {
+        issue.verification = {
+          status: 'needs_manual_review',
+          severity: issue.severity,
+          reason: 'Issue verification failed; manual review required.',
+          evidence: err instanceof Error ? err.message : String(err),
+        }
+        issue.publishable = true
+      }
       logger.warn('Issue verification failed, keeping original severities:', err)
     }
   }

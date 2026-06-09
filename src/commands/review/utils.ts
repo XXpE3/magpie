@@ -59,8 +59,30 @@ export function getRandomJoke(): string {
   return COLD_JOKES[Math.floor(Math.random() * COLD_JOKES.length)]
 }
 
+export function isIssuePublishable(issue: MergedIssue): boolean {
+  const status = issue.verification?.status
+  return issue.publishable !== false && status !== 'false_positive' && status !== 'pre_existing'
+}
+
+export function requiresManualPublishReview(issue: MergedIssue): boolean {
+  return issue.verification?.status === 'needs_manual_review'
+}
+
+export function formatVerificationLabel(issue: MergedIssue): string {
+  const status = issue.verification?.status ?? 'unverified'
+  return issue.publishable === false ? `${status} · not publishable` : status
+}
+
+
 export function formatIssueForGitHub(issue: MergedIssue): string {
   let comment = `**[${issue.severity.toUpperCase()}]** ${issue.title}\n\n${issue.description}`
+  if (issue.verification) {
+    comment += `\n\n**Verification:** ${issue.verification.status}`
+    comment += `\n\n**Reason:** ${issue.verification.reason}`
+    if (issue.verification.evidence) {
+      comment += `\n\n**Evidence:** ${issue.verification.evidence}`
+    }
+  }
   if (issue.suggestedFix) {
     comment += `\n\n**Suggested fix:** ${issue.suggestedFix}`
   }
@@ -90,6 +112,21 @@ export function formatMarkdown(result: DebateResult): string {
   }
 
   md += `## Final Conclusion\n\n${result.finalConclusion}\n`
+
+  if (result.parsedIssues?.length) {
+    md += '\n## Verified Issues\n\n'
+    md += '| # | Status | Severity | Location | Issue | Reason | Evidence |\n'
+    md += '|---|--------|----------|----------|-------|--------|----------|\n'
+    for (let i = 0; i < result.parsedIssues.length; i++) {
+      const issue = result.parsedIssues[i]
+      const location = issue.line ? `${issue.file}:${issue.line}` : issue.file
+      const verification = issue.verification
+      const status = verification?.status ?? 'unverified'
+      const reason = verification?.reason ?? ''
+      const evidence = verification?.evidence ?? ''
+      md += `| ${i + 1} | ${status} | ${issue.severity} | ${location} | ${issue.title} | ${reason} | ${evidence} |\n`
+    }
+  }
 
   if (result.verifiedConclusion) {
     md += `\n## Verified Conclusion\n\n${result.verifiedConclusion}\n`

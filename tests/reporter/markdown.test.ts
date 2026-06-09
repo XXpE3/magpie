@@ -42,4 +42,38 @@ describe('MarkdownReporter', () => {
     expect(report).toContain('SQL injection')
     expect(report).toContain('🟡 Medium Priority')
   })
+
+  it('renders verification status reason and evidence', () => {
+    const result: RepoReviewResult = {
+      repoName: 'test-repo',
+      timestamp: new Date(),
+      stats: { totalFiles: 1, totalLines: 100, languages: {}, estimatedTokens: 100, estimatedCost: 0.001 },
+      architectureAnalysis: '',
+      issues: [
+        {
+          id: 1,
+          location: 'a.ts:10',
+          description: 'SQL injection',
+          severity: 'high',
+          consensus: '2/2',
+          verification: {
+            status: 'verified',
+            severity: 'high',
+            reason: 'User input reaches query construction',
+            evidence: 'a.ts:10 concatenates request.query'
+          },
+          publishable: true
+        }
+      ],
+      tokenUsage: { total: 1000, cost: 0.01 }
+    }
+
+    const reporter = new MarkdownReporter()
+    const report = reporter.generate(result)
+
+    expect(report).toContain('Verification')
+    expect(report).toContain('verified')
+    expect(report).toContain('User input reaches query construction')
+    expect(report).toContain('a.ts:10 concatenates request.query')
+  })
 })

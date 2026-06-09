@@ -13,7 +13,7 @@ import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
 import { ContextGatherer } from '../context-gatherer/index.js'
 import type { ReviewTarget, ReviewTargetFile, ReviewerSessionState } from './review/types.js'
-import { fixMarkdown, getRandomJoke, formatMarkdown } from './review/utils.js'
+import { fixMarkdown, getRandomJoke, formatMarkdown, formatVerificationLabel } from './review/utils.js'
 import { selectReviewers, interactiveFollowUpQA, interactiveCommentReview, interactivePostReviewDiscussion, interactiveGeneralDiscussion } from './review/interactive.js'
 import { handleRepoReview } from './review/repo-review.js'
 import { canForceProceed, formatParallelStatus, isPlainForceProceedKey } from './review/parallel-status.js'
@@ -831,6 +831,12 @@ export const reviewCommand = new Command('review')
 
           console.log(color(`  ${String(i + 1).padStart(2)}. [${issue.severity.toUpperCase().padEnd(8)}] ${issue.title}`))
           console.log(chalk.dim(`      ${location}  [${reviewers}]`))
+          if (issue.verification) {
+            console.log(chalk.dim(`      verification: ${formatVerificationLabel(issue)} — ${issue.verification.reason}`))
+            if (issue.verification.evidence) {
+              console.log(chalk.dim(`      evidence: ${issue.verification.evidence.slice(0, 140)}`))
+            }
+          }
           if (issue.suggestedFix) {
             console.log(chalk.green(`      Fix: ${issue.suggestedFix.slice(0, 100)}`))
           }

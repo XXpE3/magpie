@@ -160,6 +160,29 @@ describe('classifyComments', () => {
     expect(result[0].mode).toBe('file')
   })
 
+
+  it('filters comments marked not publishable before classification', () => {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (cmd === 'gh' && text.includes('/files')) {
+        return JSON.stringify([{
+          filename: 'src/auth.ts',
+          patch: '@@ -1,3 +1,3 @@\n context\n-old\n+new\n context'
+        }])
+      }
+      return ''
+    }) as never)
+
+    const result = classifyComments('1', [
+      { path: 'src/auth.ts', line: 2, body: 'false positive', publishable: false },
+      { path: 'src/auth.ts', line: 2, body: 'verified', publishable: true }
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0].input.body).toBe('verified')
+  })
   it('rejects non-numeric PR numbers', () => {
     expect(() => classifyComments('abc', [])).toThrow('Invalid PR number')
   })
@@ -326,5 +349,60 @@ describe('postReview', () => {
     expect(result.posted).toBe(0)
     expect(result.failed).toBe(0)
     expect(result.details).toHaveLength(0)
+  })
+
+
+  it('skips classified comments marked not publishable', () => {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[]) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (cmd === 'gh' && text.includes('/comments --paginate')) {
+        return ''
+      }
+      if (cmd === 'gh' && text.includes('/reviews')) {
+        throw new Error('should not post')
+      }
+      return ''
+    }) as never)
+
+    const result = postReview('1', [
+      { input: { path: 'src/auth.ts', line: 10, body: 'false positive', publishable: false }, mode: 'inline' as const }
+    ], 'SHA')
+
+    expect(result.posted).toBe(0)
+    expect(result.skipped).toBe(1)
+    expect(result.failed).toBe(0)
+  })
+
+  it('uses queued publishable inputs for individual fallback posts', () => {
+    const postedBodies: string[] = []
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[], options?: { input?: string }) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (cmd === 'gh' && text.includes('/comments --paginate')) {
+        return ''
+      }
+      if (cmd === 'gh' && text.includes('/reviews')) {
+        throw new Error('batch failed')
+      }
+      if (cmd === 'gh' && text.includes('/pulls/1/comments')) {
+        postedBodies.push(JSON.parse(options?.input || '{}').body)
+        return '{}'
+      }
+      return ''
+    }) as never)
+
+    const result = postReview('1', [
+      { input: { path: 'src/auth.ts', line: 10, body: 'false positive', publishable: false }, mode: 'inline' as const },
+      { input: { path: 'src/auth.ts', line: 10, body: 'approved comment' }, mode: 'inline' as const }
+    ], 'SHA')
+
+    expect(result.posted).toBe(1)
+    expect(result.skipped).toBe(1)
+    expect(postedBodies).toEqual(['approved comment'])
   })
 })
