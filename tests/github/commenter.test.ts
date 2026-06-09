@@ -278,6 +278,16 @@ describe('findLineByContent', () => {
     expect(findLineByContent(patch, 'data')).toBeNull()
   })
 
+  it('skips blank diff lines while matching content', () => {
+    const patchWithBlank = '@@ -1,3 +1,3 @@\n context\n+\n+validContentHere'
+    expect(findLineByContent(patchWithBlank, 'validContentHere')).toBe(3)
+  })
+
+  it('skips short diff line content when matching a longer snippet', () => {
+    const patchWithShortLine = '@@ -1,2 +1,2 @@\n+return\n+processOrder(data)'
+    expect(findLineByContent(patchWithShortLine, 'return processOrder(data)')).toBe(2)
+  })
+
   it('returns null for empty inputs', () => {
     expect(findLineByContent('', 'test')).toBeNull()
     expect(findLineByContent(patch, '')).toBeNull()
@@ -404,5 +414,69 @@ describe('postReview', () => {
     expect(result.posted).toBe(1)
     expect(result.skipped).toBe(1)
     expect(postedBodies).toEqual(['approved comment'])
+  })
+
+  it('counts individual fallback file-level posts as file-level', () => {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[], options?: { input?: string }) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (cmd === 'gh' && text.includes('/comments --paginate')) {
+        return ''
+      }
+      if (cmd === 'gh' && text.includes('/reviews')) {
+        throw new Error('batch failed')
+      }
+      if (cmd === 'gh' && text.includes('/pulls/1/comments')) {
+        const payload = JSON.parse(options?.input || '{}')
+        if (payload.line != null) throw new Error('line is not in diff')
+        if (payload.subject_type === 'file') return '{}'
+      }
+      return ''
+    }) as never)
+
+    const result = postReview('1', [
+      { input: { path: 'src/auth.ts', line: 10, body: 'falls back to file' }, mode: 'inline' as const }
+    ], 'SHA')
+
+    expect(result.posted).toBe(1)
+    expect(result.inline).toBe(0)
+    expect(result.fileLevel).toBe(1)
+    expect(result.global).toBe(0)
+    expect(result.details[0].mode).toBe('file')
+  })
+
+  it('uses each fallback entry for duplicate path and line comments', () => {
+    const postedBodies: string[] = []
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[], options?: { input?: string }) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (cmd === 'gh' && text.includes('/comments --paginate')) {
+        return ''
+      }
+      if (cmd === 'gh' && text.includes('/reviews')) {
+        throw new Error('batch failed')
+      }
+      if (cmd === 'gh' && text.includes('/pulls/1/comments')) {
+        postedBodies.push(JSON.parse(options?.input || '{}').body)
+        return '{}'
+      }
+      return ''
+    }) as never)
+
+    const result = postReview('1', [
+      { input: { path: 'src/auth.ts', line: 10, body: 'first duplicate-location comment' }, mode: 'inline' as const },
+      { input: { path: 'src/auth.ts', line: 10, body: 'second duplicate-location comment' }, mode: 'inline' as const }
+    ], 'SHA')
+
+    expect(result.posted).toBe(2)
+    expect(result.inline).toBe(2)
+    expect(postedBodies).toEqual([
+      'first duplicate-location comment',
+      'second duplicate-location comment',
+    ])
   })
 })
