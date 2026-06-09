@@ -164,4 +164,134 @@ describe('DebateOrchestrator', () => {
     expect(secondExtractionPrompt).toContain('Round 1 duplicate from reviewer 2')
     expect(secondExtractionPrompt).not.toContain('Round 1 issue from reviewer 1')
   })
+
+  it('retries when valid JSON contains only filtered issue objects', async () => {
+    const reviewer: Reviewer = {
+      id: 'reviewer-1',
+      provider: createMockProvider('a', ['Review found src/auth.ts line 42 SQL injection']),
+      systemPrompt: 'You are reviewer A'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider('s', [
+        '```json\n{"issues":[{"severity":"invalid","category":"security","file":"src/auth.ts","line":42,"title":"SQL injection risk","description":"Query concatenates user input"}]}\n```',
+        '```json\n{"issues":[{"severity":"high","category":"security","file":"src/auth.ts","line":42,"title":"SQL injection risk","description":"Query concatenates user input"}]}\n```',
+        '```json\n{"verified":[{"index":0,"severity":"high","reason":"verified"}]}\n```'
+      ]),
+      systemPrompt: 'You are a summarizer'
+    }
+    const analyzer: Reviewer = {
+      id: 'analyzer',
+      provider: createMockProvider('analyzer', ['PR analysis result']),
+      systemPrompt: 'You are an analyzer'
+    }
+
+    const orchestrator = new DebateOrchestrator(
+      [reviewer],
+      summarizer,
+      analyzer,
+      { maxRounds: 1, interactive: false, checkConvergence: false, skipConclusion: true }
+    )
+
+    const result = await orchestrator.run('123', 'Review this PR')
+
+    expect(result.parsedIssues).toHaveLength(1)
+    expect(result.parsedIssues![0].title).toBe('SQL injection risk')
+    expect(vi.mocked(summarizer.provider.chat)).toHaveBeenCalledTimes(3)
+  })
+
+  it('resets summarizer sessions after structurizer chat failures', async () => {
+    const reviewer: Reviewer = {
+      id: 'reviewer-1',
+      provider: createMockProvider('a', ['Review found no issues']),
+      systemPrompt: 'You are reviewer A'
+    }
+    const endSession = vi.fn()
+    const summarizerProvider: AIProvider = {
+      name: 's',
+      capabilities: testCapabilities,
+      chat: vi.fn()
+        .mockRejectedValueOnce(new Error('cli failed'))
+        .mockResolvedValueOnce('```json\n{"issues":[]}\n```'),
+      chatStream: vi.fn(),
+      endSession
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: summarizerProvider,
+      systemPrompt: 'You are a summarizer'
+    }
+    const analyzer: Reviewer = {
+      id: 'analyzer',
+      provider: createMockProvider('analyzer', ['PR analysis result']),
+      systemPrompt: 'You are an analyzer'
+    }
+
+    const orchestrator = new DebateOrchestrator(
+      [reviewer],
+      summarizer,
+      analyzer,
+      { maxRounds: 1, interactive: false, checkConvergence: false, skipConclusion: true }
+    )
+
+    await orchestrator.run('123', 'Review this PR')
+
+    expect(summarizerProvider.chat).toHaveBeenCalledTimes(2)
+    expect(endSession.mock.calls.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('uses prior extracted issues to preserve cross-message confirmations', async () => {
+    const reviewerA: Reviewer = {
+      id: 'reviewer-1',
+      provider: createMockProvider('a', [
+        'src/auth.ts line 42 has SQL injection risk',
+        'No additional issues'
+      ]),
+      systemPrompt: 'You are reviewer A'
+    }
+    const reviewerB: Reviewer = {
+      id: 'reviewer-2',
+      provider: createMockProvider('b', [
+        'No independent issues',
+        "I agree with reviewer-1's SQL injection finding; no additional issues"
+      ]),
+      systemPrompt: 'You are reviewer B'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider('s', [
+        '```json\n{"issues":[{"severity":"high","category":"security","file":"src/auth.ts","line":42,"title":"SQL injection risk","description":"Query concatenates user input"}]}\n```',
+        '```json\n{"issues":[]}\n```',
+        '```json\n{"issues":[]}\n```',
+        '```json\n{"issues":[{"severity":"high","category":"security","file":"src/auth.ts","line":42,"title":"SQL injection risk","description":"Reviewer confirms the query concatenates user input"}]}\n```',
+        '```json\n{"verified":[{"index":0,"severity":"high","reason":"verified"}]}\n```'
+      ]),
+      systemPrompt: 'You are a summarizer'
+    }
+    const analyzer: Reviewer = {
+      id: 'analyzer',
+      provider: createMockProvider('analyzer', ['PR analysis result']),
+      systemPrompt: 'You are an analyzer'
+    }
+
+    const orchestrator = new DebateOrchestrator(
+      [reviewerA, reviewerB],
+      summarizer,
+      analyzer,
+      { maxRounds: 2, interactive: false, checkConvergence: false, skipConclusion: true }
+    )
+
+    const result = await orchestrator.run('123', 'Review this PR')
+
+    expect(result.parsedIssues).toHaveLength(1)
+    expect(result.parsedIssues![0].raisedBy).toEqual(['reviewer-1', 'reviewer-2'])
+    expect(result.parsedIssues![0].sources).toEqual([
+      { reviewerId: 'reviewer-1', round: 1, messageIndex: 0 },
+      { reviewerId: 'reviewer-2', round: 2, messageIndex: 3 }
+    ])
+
+    const confirmationPrompt = vi.mocked(summarizer.provider.chat).mock.calls[3][0][0].content
+    expect(confirmationPrompt).toContain('Previously extracted issues for reference only')
+    expect(confirmationPrompt).toContain('SQL injection risk')
+  })
 })

@@ -35,6 +35,43 @@ function isForceProceedError(error: unknown): boolean {
   return error instanceof ForceProceedError
 }
 
+function rawReviewerOutputIssueCount(response: string): number | undefined {
+  const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/)
+  let jsonStr = jsonMatch?.[1]
+
+  if (!jsonStr) {
+    const rawMatch = response.match(/\{[\s\S]*"issues"\s*:\s*\[[\s\S]*\][\s\S]*\}/)
+    if (rawMatch) jsonStr = rawMatch[0]
+  }
+
+  if (!jsonStr) return undefined
+
+  try {
+    const parsed = JSON.parse(jsonStr)
+    return Array.isArray(parsed.issues) ? parsed.issues.length : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function formatPriorIssueContext(candidates: IssueCandidate[]): string {
+  if (candidates.length === 0) return ''
+
+  const issues = deduplicateIssues(candidates)
+  const issueText = issues.map((issue, index) => {
+    const loc = issue.line ? `${issue.file}:${issue.line}` : issue.file
+    const sources = issue.sources
+      .map(source => `${source.reviewerId}${source.round == null ? '' : ` round ${source.round}`}`)
+      .join(', ')
+    const description = issue.description.length > 500
+      ? `${issue.description.slice(0, 500)}…`
+      : issue.description
+    return `${index + 1}. [${issue.severity}] ${loc} — ${issue.title}\nDescription: ${description}\nSources: ${sources}`
+  }).join('\n\n')
+
+  return `\n\nPreviously extracted issues for reference only:\n\n${issueText}\n\nUse the previous issues only to resolve references in the current message. If the current message agrees with or confirms a previous issue, emit that issue using the previous file/title details and the current reviewer as the source. Do not emit previous issues that the current message does not mention, confirm, or discuss.`
+}
+
 interface VisibleConversationMessage {
   message: DebateMessage
   index: number
@@ -1228,6 +1265,7 @@ Previous rounds discussion:`
 
     for (const { message, index } of reviewMessages) {
       const roundLabel = message.round == null ? 'unknown' : String(message.round)
+      const priorIssueContext = formatPriorIssueContext(candidates)
       const basePrompt = `Extract concrete issues from this single code review message into structured JSON.
 
 Reviewer ID: ${message.reviewerId}
@@ -1235,7 +1273,7 @@ Round: ${roundLabel}
 
 Review message:
 
-${message.content}
+${message.content}${priorIssueContext}
 
 Output ONLY a JSON block (no other text):
 \`\`\`json
@@ -1273,11 +1311,11 @@ Rules:
 
           const prompt = attempt === 1
             ? basePrompt
-            : `Your previous response was not valid JSON. Output ONLY a fenced JSON block with an issues array. No other text.
+            : `Your previous response was not valid JSON, had an invalid issues array, or omitted required fields from extracted issues. Output ONLY a fenced JSON block with an issues array. No other text.
 
 Review message from ${message.reviewerId}, round ${roundLabel}:
 
-${message.content}
+${message.content}${priorIssueContext}
 
 Required JSON format:
 \`\`\`json
@@ -1285,6 +1323,7 @@ Required JSON format:
 \`\`\``
 
           const messages: Message[] = [{ role: 'user', content: prompt }]
+          this.summarizer.provider.endSession?.()
           const response = await this.trackedPromise(
             'structurizer',
             'structurizer',
@@ -1295,23 +1334,28 @@ Required JSON format:
 
           const parsed = parseReviewerOutput(response)
           if (parsed) {
-            for (const issue of parsed.issues) {
-              candidates.push({
-                reviewerId: message.reviewerId,
-                round: message.round,
-                messageIndex: index,
-                issue
-              })
+            const rawIssueCount = rawReviewerOutputIssueCount(response)
+            if (parsed.issues.length > 0 || rawIssueCount === 0) {
+              for (const issue of parsed.issues) {
+                candidates.push({
+                  reviewerId: message.reviewerId,
+                  round: message.round,
+                  messageIndex: index,
+                  issue
+                })
+              }
+              break
             }
-            break
           }
-          // Parse failed — will retry if attempts remain, then continue with the next message.
+          // Parse failed or all emitted issues were filtered — will retry if attempts remain.
         } catch {
+          this.summarizer.provider.endSession?.()
           // Call failed — will retry if attempts remain, then continue with the next message.
         }
       }
     }
 
+    this.summarizer.provider.endSession?.()
     return deduplicateIssues(candidates)
   }
 
