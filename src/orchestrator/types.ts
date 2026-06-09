@@ -133,6 +133,7 @@ export interface ReviewIssue {
   title: string
   description: string
   suggestedFix?: string
+  evidence?: string
   codeSnippet?: string
   raisedBy?: string[]  // preserved from structurizer output
 }

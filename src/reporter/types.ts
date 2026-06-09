@@ -14,8 +14,14 @@ export interface ReviewIssue {
   id: number
   location: string
   description: string
-  severity: 'high' | 'medium' | 'low'
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'nitpick'
   consensus: string
+  category?: string
+  file?: string
+  line?: number
+  endLine?: number
+  title?: string
+  evidence?: string
   details?: string
   debateSummary?: string
   suggestedFix?: string

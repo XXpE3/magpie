@@ -1,6 +1,11 @@
 // src/reporter/markdown.ts
 import type { RepoReviewResult, ReviewIssue } from './types.js'
 
+function escapeTableCell(value: string | number | undefined): string {
+  if (value == null) return ''
+  return String(value).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>')
+}
+
 export class MarkdownReporter {
   generate(result: RepoReviewResult): string {
     const lines: string[] = []
@@ -13,10 +18,12 @@ export class MarkdownReporter {
 
     // Executive summary
     lines.push('## Executive Summary')
+    const criticalCount = result.issues.filter(i => i.severity === 'critical').length
     const highCount = result.issues.filter(i => i.severity === 'high').length
     const mediumCount = result.issues.filter(i => i.severity === 'medium').length
     const lowCount = result.issues.filter(i => i.severity === 'low').length
-    lines.push(`- Issues found: ${result.issues.length} (High: ${highCount}, Medium: ${mediumCount}, Low: ${lowCount})`)
+    const nitpickCount = result.issues.filter(i => i.severity === 'nitpick').length
+    lines.push(`- Issues found: ${result.issues.length} (Critical: ${criticalCount}, High: ${highCount}, Medium: ${mediumCount}, Low: ${lowCount}, Nitpick: ${nitpickCount})`)
     lines.push('')
 
     // Architecture
@@ -45,9 +52,17 @@ export class MarkdownReporter {
     lines.push('## Issue List')
     lines.push('')
 
+    const criticalIssues = result.issues.filter(i => i.severity === 'critical')
     const highIssues = result.issues.filter(i => i.severity === 'high')
     const mediumIssues = result.issues.filter(i => i.severity === 'medium')
     const lowIssues = result.issues.filter(i => i.severity === 'low')
+    const nitpickIssues = result.issues.filter(i => i.severity === 'nitpick')
+
+    if (criticalIssues.length > 0) {
+      lines.push('### 🔴 Critical Priority')
+      lines.push(this.formatIssueTable(criticalIssues))
+      lines.push('')
+    }
 
     if (highIssues.length > 0) {
       lines.push('### 🔴 High Priority')
@@ -67,6 +82,12 @@ export class MarkdownReporter {
       lines.push('')
     }
 
+    if (nitpickIssues.length > 0) {
+      lines.push('### ⚪ Nitpick')
+      lines.push(this.formatIssueTable(nitpickIssues))
+      lines.push('')
+    }
+
     // Token usage
     lines.push('## Token Usage Statistics')
     lines.push(`- Total: ${result.tokenUsage.total.toLocaleString()} tokens (~$${result.tokenUsage.cost.toFixed(4)})`)
@@ -76,14 +97,18 @@ export class MarkdownReporter {
 
   private formatIssueTable(issues: ReviewIssue[]): string {
     const lines: string[] = []
-    lines.push('| # | Location | Issue | Consensus | Verification | Reason | Evidence |')
-    lines.push('|---|----------|-------|-----------|--------------|--------|----------|')
+    lines.push('| # | File | Line | Severity | Issue | Description | Consensus | Verification | Reason | Evidence | Suggested Fix |')
+    lines.push('|---|------|------|----------|-------|-------------|-----------|--------------|--------|----------|---------------|')
     for (const issue of issues) {
       const verification = issue.verification
       const status = verification?.status ?? 'unverified'
       const reason = verification?.reason ?? ''
-      const evidence = verification?.evidence ?? ''
-      lines.push(`| ${issue.id} | ${issue.location} | ${issue.description} | ${issue.consensus} | ${status} | ${reason} | ${evidence} |`)
+      const evidence = issue.evidence ?? verification?.evidence ?? ''
+      const file = issue.file ?? issue.location
+      const line = issue.line
+      const title = issue.title ?? issue.description
+      const suggestedFix = issue.suggestedFix ?? ''
+      lines.push(`| ${issue.id} | ${escapeTableCell(file)} | ${escapeTableCell(line)} | ${issue.severity} | ${escapeTableCell(title)} | ${escapeTableCell(issue.description)} | ${escapeTableCell(issue.consensus)} | ${status} | ${escapeTableCell(reason)} | ${escapeTableCell(evidence)} | ${escapeTableCell(suggestedFix)} |`)
     }
     return lines.join('\n')
   }

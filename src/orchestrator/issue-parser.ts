@@ -53,6 +53,7 @@ export function parseReviewerOutput(response: string): ReviewerOutput | null {
           title: (issue.title as string).trim(),
           description: (issue.description as string).trim(),
           suggestedFix: typeof issue.suggestedFix === 'string' ? issue.suggestedFix : undefined,
+          evidence: typeof issue.evidence === 'string' ? issue.evidence : undefined,
           codeSnippet: typeof issue.codeSnippet === 'string' ? issue.codeSnippet : undefined,
           raisedBy: Array.isArray(issue.raisedBy) ? issue.raisedBy as string[] : undefined
         }
