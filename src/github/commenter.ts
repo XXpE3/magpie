@@ -440,6 +440,7 @@ export function postReview(
   const details: ReviewResult['details'] = []
   const reviewComments: Array<{ path: string; line?: number; side?: string; body: string; subject_type?: string }> = []
   const reviewDetailIndices: number[] = []
+  const reviewInputs: ReviewCommentInput[] = []
   const globalEntries: Array<{ input: ReviewCommentInput; detailIndex: number }> = []
 
   // Build payloads based on pre-classified modes, skipping duplicates
@@ -463,6 +464,7 @@ export function postReview(
       })
       details.push({ path: c.path, line: c.line, success: false, mode: 'inline' })
       reviewDetailIndices.push(details.length - 1)
+      reviewInputs.push(c)
     } else if (mode === 'file') {
       const lineRef = c.line ? `**Line ${c.line}:**\n\n` : ''
       reviewComments.push({
@@ -472,6 +474,7 @@ export function postReview(
       })
       details.push({ path: c.path, line: c.line, success: false, mode: 'file' })
       reviewDetailIndices.push(details.length - 1)
+      reviewInputs.push(c)
     } else {
       details.push({ path: c.path, line: c.line, success: false, mode: 'global' })
       globalEntries.push({ input: c, detailIndex: details.length - 1 })
@@ -497,14 +500,12 @@ export function postReview(
       // Batch failed — try posting individually
       for (let j = 0; j < reviewComments.length; j++) {
         const idx = reviewDetailIndices[j]
-        const orig = classified.find(
-          cc => cc.input.path === details[idx].path && cc.input.line === details[idx].line
-        )
+        const orig = reviewInputs[j]
         if (!orig) continue
         const result = postComment(prNumber, {
-          path: orig.input.path,
-          line: orig.input.line,
-          body: orig.input.body,
+          path: orig.path,
+          line: orig.line,
+          body: orig.body,
           commitSha,
           repo,
         })

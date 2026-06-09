@@ -375,4 +375,34 @@ describe('postReview', () => {
     expect(result.skipped).toBe(1)
     expect(result.failed).toBe(0)
   })
+
+  it('uses queued publishable inputs for individual fallback posts', () => {
+    const postedBodies: string[] = []
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: string[], options?: { input?: string }) => {
+      const text = commandText(args)
+      if (cmd === 'git' && text.includes('remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (cmd === 'gh' && text.includes('/comments --paginate')) {
+        return ''
+      }
+      if (cmd === 'gh' && text.includes('/reviews')) {
+        throw new Error('batch failed')
+      }
+      if (cmd === 'gh' && text.includes('/pulls/1/comments')) {
+        postedBodies.push(JSON.parse(options?.input || '{}').body)
+        return '{}'
+      }
+      return ''
+    }) as never)
+
+    const result = postReview('1', [
+      { input: { path: 'src/auth.ts', line: 10, body: 'false positive', publishable: false }, mode: 'inline' as const },
+      { input: { path: 'src/auth.ts', line: 10, body: 'approved comment' }, mode: 'inline' as const }
+    ], 'SHA')
+
+    expect(result.posted).toBe(1)
+    expect(result.skipped).toBe(1)
+    expect(postedBodies).toEqual(['approved comment'])
+  })
 })

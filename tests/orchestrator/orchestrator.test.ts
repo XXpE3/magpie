@@ -334,4 +334,82 @@ describe('DebateOrchestrator', () => {
     })
     expect(result.parsedIssues![0].publishable).toBe(false)
   })
+
+  it('preserves verifier statuses when evidence is an array', async () => {
+    const reviewer: Reviewer = {
+      id: 'reviewer-1',
+      provider: createMockProvider('a', ['src/auth.ts line 42 has SQL injection']),
+      systemPrompt: 'You are reviewer A'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider('s', [
+        '```json\n{"issues":[{"severity":"high","category":"security","file":"src/auth.ts","line":42,"title":"SQL injection risk","description":"Query concatenates user input"}]}\n```',
+        '```json\n{"verified":[{"index":0,"status":"pre_existing","severity":"low","reason":"Issue predates this PR","evidence":["main:src/auth.ts:40 already concatenates input","PR only moved the function"]}]}\n```'
+      ]),
+      systemPrompt: 'You are a summarizer'
+    }
+    const analyzer: Reviewer = {
+      id: 'analyzer',
+      provider: createMockProvider('analyzer', ['PR analysis result']),
+      systemPrompt: 'You are an analyzer'
+    }
+
+    const orchestrator = new DebateOrchestrator(
+      [reviewer],
+      summarizer,
+      analyzer,
+      { maxRounds: 1, interactive: false, checkConvergence: false, skipConclusion: true }
+    )
+
+    const result = await orchestrator.run('123', 'Review this PR')
+
+    expect(result.parsedIssues).toHaveLength(1)
+    expect(result.parsedIssues![0].verification).toEqual({
+      status: 'pre_existing',
+      severity: 'low',
+      reason: 'Issue predates this PR',
+      evidence: 'main:src/auth.ts:40 already concatenates input; PR only moved the function',
+    })
+    expect(result.parsedIssues![0].publishable).toBe(false)
+  })
+
+  it('marks all issues for manual review when verifier output has no verified array', async () => {
+    const reviewer: Reviewer = {
+      id: 'reviewer-1',
+      provider: createMockProvider('a', ['src/auth.ts line 42 has SQL injection']),
+      systemPrompt: 'You are reviewer A'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider('s', [
+        '```json\n{"issues":[{"severity":"high","category":"security","file":"src/auth.ts","line":42,"title":"SQL injection risk","description":"Query concatenates user input"}]}\n```',
+        '```json\n{"result":[]}\n```'
+      ]),
+      systemPrompt: 'You are a summarizer'
+    }
+    const analyzer: Reviewer = {
+      id: 'analyzer',
+      provider: createMockProvider('analyzer', ['PR analysis result']),
+      systemPrompt: 'You are an analyzer'
+    }
+
+    const orchestrator = new DebateOrchestrator(
+      [reviewer],
+      summarizer,
+      analyzer,
+      { maxRounds: 1, interactive: false, checkConvergence: false, skipConclusion: true }
+    )
+
+    const result = await orchestrator.run('123', 'Review this PR')
+
+    expect(result.parsedIssues).toHaveLength(1)
+    expect(result.parsedIssues![0].verification).toEqual({
+      status: 'needs_manual_review',
+      severity: 'high',
+      reason: 'Verifier returned JSON without a verified array; manual review required.',
+      evidence: 'Missing verified array in verifier response.',
+    })
+    expect(result.parsedIssues![0].publishable).toBe(true)
+  })
 })
