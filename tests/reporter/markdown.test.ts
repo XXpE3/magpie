@@ -76,4 +76,42 @@ describe('MarkdownReporter', () => {
     expect(report).toContain('User input reaches query construction')
     expect(report).toContain('a.ts:10 concatenates request.query')
   })
+
+  it('renders unified issue schema fields', () => {
+    const result: RepoReviewResult = {
+      repoName: 'test-repo',
+      timestamp: new Date(),
+      stats: { totalFiles: 1, totalLines: 100, languages: {}, estimatedTokens: 100, estimatedCost: 0.001 },
+      architectureAnalysis: '',
+      issues: [
+        {
+          id: 1,
+          location: 'src/api.ts:42',
+          file: 'src/api.ts',
+          line: 42,
+          title: 'Missing error handling',
+          description: 'Rejected requests are ignored',
+          severity: 'medium',
+          category: 'error-handling',
+          consensus: '1/1',
+          evidence: 'src/api.ts:42 awaits without catch',
+          suggestedFix: 'Return an error response'
+        }
+      ],
+      tokenUsage: { total: 1000, cost: 0.01 }
+    }
+
+    const reporter = new MarkdownReporter()
+    const report = reporter.generate(result)
+
+    expect(report).toContain('File')
+    expect(report).toContain('Line')
+    expect(report).toContain('Severity')
+    expect(report).toContain('Suggested Fix')
+    expect(report).toContain('src/api.ts')
+    expect(report).toContain('42')
+    expect(report).toContain('medium')
+    expect(report).toContain('src/api.ts:42 awaits without catch')
+    expect(report).toContain('Return an error response')
+  })
 })

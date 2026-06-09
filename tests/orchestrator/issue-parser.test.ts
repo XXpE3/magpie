@@ -15,7 +15,9 @@ describe('parseReviewerOutput', () => {
       "file": "src/auth.ts",
       "line": 42,
       "title": "SQL injection risk",
-      "description": "User input concatenated into query"
+      "description": "User input concatenated into query",
+      "suggestedFix": "Use parameterized queries",
+      "evidence": "src/auth.ts:42 builds SQL with raw input"
     }
   ],
   "verdict": "request_changes",
@@ -26,6 +28,8 @@ describe('parseReviewerOutput', () => {
     expect(result).not.toBeNull()
     expect(result!.issues).toHaveLength(1)
     expect(result!.issues[0].severity).toBe('critical')
+    expect(result!.issues[0].suggestedFix).toBe('Use parameterized queries')
+    expect(result!.issues[0].evidence).toBe('src/auth.ts:42 builds SQL with raw input')
     expect(result!.verdict).toBe('request_changes')
   })
 

@@ -1,10 +1,13 @@
 // tests/orchestrator/repo-orchestrator.test.ts
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { RepoOrchestrator } from '../../src/orchestrator/repo-orchestrator.js'
 import type { AIProvider } from '../../src/providers/types.js'
 import type { Reviewer } from '../../src/orchestrator/types.js'
 import type { ReviewPlan, ReviewStep } from '../../src/planner/types.js'
 import type { FeaturePlan, FeatureStep } from '../../src/planner/feature-planner.js'
+import { mkdtemp, rm, writeFile } from 'fs/promises'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 const testCapabilities = {
   canReadRepo: false,
@@ -15,11 +18,17 @@ const testCapabilities = {
   supportsSession: false,
 }
 
-const createMockProvider = (responses: string[]): AIProvider => {
+const tempDirs: string[] = []
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
+})
+
+const createMockProvider = (responses: string[], capabilities: AIProvider['capabilities'] = testCapabilities): AIProvider => {
   let callCount = 0
   return {
     name: 'mock',
-    capabilities: testCapabilities,
+    capabilities,
     chat: vi.fn().mockImplementation(async () => responses[callCount++] || 'default'),
     chatStream: vi.fn().mockImplementation(async function* () {
       yield responses[callCount++] || 'default'
@@ -88,6 +97,173 @@ describe('RepoOrchestrator', () => {
     expect(result.issues[0].location).toBe('src/api.ts:10')
     expect(result.issues[0].description).toBe('SQL injection vulnerability')
     expect(result.issues[0].severity).toBe('high')
+  })
+
+  it('should parse issues from unified JSON schema responses', async () => {
+    const reviewerA: Reviewer = {
+      id: 'security',
+      provider: createMockProvider([
+        `\`\`\`json
+{
+  "issues": [
+    {
+      "severity": "medium",
+      "category": "error-handling",
+      "file": "src/api.ts",
+      "line": 42,
+      "title": "Missing error branch",
+      "description": "The request failure path is ignored.",
+      "suggestedFix": "Return an error response when the request fails.",
+      "evidence": "src/api.ts:42 drops the rejected promise"
+    }
+  ],
+  "verdict": "request_changes",
+  "summary": "One issue"
+}
+\`\`\``
+      ]),
+      systemPrompt: 'Security expert'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider(['Architecture looks good']),
+      systemPrompt: 'Summarizer'
+    }
+
+    const plan: ReviewPlan = {
+      steps: [
+        { name: 'src/api', description: 'Review API', files: [], estimatedTokens: 500 }
+      ],
+      totalEstimatedTokens: 500,
+      totalEstimatedCost: 0.005
+    }
+
+    const orchestrator = new RepoOrchestrator([reviewerA], summarizer)
+    const result = await orchestrator.executePlan(plan, 'test-repo')
+
+    expect(result.issues).toHaveLength(1)
+    expect(result.issues[0]).toMatchObject({
+      location: 'src/api.ts:42',
+      file: 'src/api.ts',
+      line: 42,
+      severity: 'medium',
+      category: 'error-handling',
+      title: 'Missing error branch',
+      description: 'The request failure path is ignored.',
+      suggestedFix: 'Return an error response when the request fails.',
+      evidence: 'src/api.ts:42 drops the rejected promise'
+    })
+  })
+
+  it('should embed real file contents for API providers', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'magpie-repo-review-'))
+    tempDirs.push(dir)
+    const filePath = join(dir, 'api.ts')
+    await writeFile(filePath, 'export const token = "real-content"\n', 'utf8')
+
+    const reviewerProvider = createMockProvider(['{"issues":[]}'])
+    const reviewer: Reviewer = {
+      id: 'api',
+      provider: reviewerProvider,
+      systemPrompt: 'API reviewer'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider(['Summary']),
+      systemPrompt: 'Summarizer'
+    }
+
+    const plan: ReviewPlan = {
+      steps: [{
+        name: 'api',
+        description: 'Review API',
+        files: [{ path: filePath, relativePath: 'api.ts', language: 'typescript', lines: 1, size: 36 }],
+        estimatedTokens: 100
+      }],
+      totalEstimatedTokens: 100,
+      totalEstimatedCost: 0.001
+    }
+
+    const orchestrator = new RepoOrchestrator([reviewer], summarizer)
+    await orchestrator.executePlan(plan, 'test-repo')
+
+    const prompt = vi.mocked(reviewerProvider.chat).mock.calls[0][0][0].content
+    expect(prompt).toContain('## api.ts')
+    expect(prompt).toContain('export const token = "real-content"')
+    expect(prompt).toContain('"evidence"')
+  })
+
+  it('should keep CLI providers in readable repository mode', async () => {
+    const cliCapabilities = { ...testCapabilities, canReadRepo: true, canUseTools: true }
+    const reviewerProvider = createMockProvider(['{"issues":[]}'], cliCapabilities)
+    const reviewer: Reviewer = {
+      id: 'cli',
+      provider: reviewerProvider,
+      systemPrompt: 'CLI reviewer'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider(['Summary']),
+      systemPrompt: 'Summarizer'
+    }
+    const plan: ReviewPlan = {
+      steps: [{
+        name: 'api',
+        description: 'Review API',
+        files: [{ path: '/repo/api.ts', relativePath: 'api.ts', language: 'typescript', lines: 1, size: 36 }],
+        estimatedTokens: 100
+      }],
+      totalEstimatedTokens: 100,
+      totalEstimatedCost: 0.001
+    }
+
+    const orchestrator = new RepoOrchestrator([reviewer], summarizer)
+    await orchestrator.executePlan(plan, 'test-repo')
+
+    const prompt = vi.mocked(reviewerProvider.chat).mock.calls[0][0][0].content
+    expect(prompt).toContain('Use your repository tools')
+    expect(prompt).toContain('api.ts')
+    expect(prompt).not.toContain('```typescript')
+  })
+
+  it('should chunk API prompts by prompt limits', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'magpie-repo-review-'))
+    tempDirs.push(dir)
+    const files = []
+    for (let i = 0; i < 3; i++) {
+      const filePath = join(dir, `file${i}.ts`)
+      await writeFile(filePath, `export const value${i} = ${i}\n`, 'utf8')
+      files.push({ path: filePath, relativePath: `file${i}.ts`, language: 'typescript', lines: 1, size: 24 })
+    }
+
+    const reviewerProvider = createMockProvider(['{"issues":[]}', '{"issues":[]}', '{"issues":[]}'])
+    const reviewer: Reviewer = {
+      id: 'api',
+      provider: reviewerProvider,
+      systemPrompt: 'API reviewer'
+    }
+    const summarizer: Reviewer = {
+      id: 'summarizer',
+      provider: createMockProvider(['Summary']),
+      systemPrompt: 'Summarizer'
+    }
+    const plan: ReviewPlan = {
+      steps: [{ name: 'chunked', description: 'Review chunks', files, estimatedTokens: 100 }],
+      totalEstimatedTokens: 100,
+      totalEstimatedCost: 0.001
+    }
+
+    const orchestrator = new RepoOrchestrator([reviewer], summarizer, {
+      promptLimits: { maxFilesPerPrompt: 1, maxFileBytes: 100, maxPromptChars: 4_000 }
+    })
+    await orchestrator.executePlan(plan, 'test-repo')
+
+    expect(reviewerProvider.chat).toHaveBeenCalledTimes(3)
+    const prompts = vi.mocked(reviewerProvider.chat).mock.calls.map(call => call[0][0].content)
+    expect(prompts[0]).toContain('file0.ts')
+    expect(prompts[0]).not.toContain('file1.ts')
+    expect(prompts[1]).toContain('file1.ts')
+    expect(prompts[2]).toContain('file2.ts')
   })
 
   it('should call onStepStart and onStepComplete callbacks', async () => {
