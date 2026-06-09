@@ -6,6 +6,7 @@ export interface FileInfo {
   lines: number
   size: number
   mtimeMs?: number
+  contentHash?: string
 }
 
 export interface RepoStats {

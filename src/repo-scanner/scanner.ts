@@ -1,5 +1,6 @@
 // src/repo-scanner/scanner.ts
 import * as fs from 'fs'
+import { createHash } from 'crypto'
 import * as path from 'path'
 import type { FileInfo, RepoStats, ScanOptions } from './types.js'
 import { shouldIgnore, detectLanguage } from './filter.js'
@@ -79,7 +80,8 @@ export class RepoScanner {
             language: detectLanguage(relativePath),
             lines,
             size: stat.size,
-            mtimeMs: stat.mtimeMs
+            mtimeMs: stat.mtimeMs,
+            contentHash: createHash('sha256').update(content).digest('hex')
           })
         } catch {
           // Skip files that can't be read as UTF-8 (likely binary or permission denied)
@@ -117,7 +119,8 @@ export class RepoScanner {
   }
 
   private isInsideRoot(targetPath: string, rootPath: string): boolean {
-    return targetPath === rootPath || targetPath.startsWith(rootPath + path.sep)
+    const relativePath = path.relative(rootPath, targetPath)
+    return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
   }
 
   private estimateTokens(charCount: number): number {
