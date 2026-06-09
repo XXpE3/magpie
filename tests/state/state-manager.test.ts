@@ -1,5 +1,5 @@
 // tests/state/state-manager.test.ts
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { StateManager } from '../../src/state/state-manager.js'
 import type { ReviewSession, FeatureAnalysis } from '../../src/state/types.js'
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
@@ -45,6 +45,38 @@ describe('StateManager', () => {
     expect(loaded).not.toBeNull()
     expect(loaded!.id).toBe('test-123')
     expect(loaded!.status).toBe('in_progress')
+  })
+
+  it('should restore nested feature result reviewedAt dates', async () => {
+    await manager.init()
+
+    const reviewedAt = '2024-02-03T04:05:06.000Z'
+    const session: ReviewSession = {
+      id: 'nested-date',
+      startedAt: new Date('2024-01-01'),
+      updatedAt: new Date('2024-01-02'),
+      status: 'in_progress',
+      config: { focusAreas: ['security'], selectedFeatures: ['write'] },
+      plan: { features: [], totalFeatures: 1, selectedCount: 1 },
+      progress: {
+        currentFeatureIndex: 1,
+        completedFeatures: ['write'],
+        featureResults: {
+          write: {
+            featureId: 'write',
+            issues: [],
+            summary: 'done',
+            reviewedAt: new Date(reviewedAt)
+          }
+        }
+      }
+    }
+
+    await manager.saveSession(session)
+    const loaded = await manager.loadSession('nested-date')
+
+    expect(loaded!.progress.featureResults.write.reviewedAt).toBeInstanceOf(Date)
+    expect(loaded!.progress.featureResults.write.reviewedAt.toISOString()).toBe(reviewedAt)
   })
 
   it('should return null for non-existent session', async () => {
@@ -199,6 +231,44 @@ describe('StateManager', () => {
       expect(loaded!.rounds[0].messages[0].timestamp).toBeInstanceOf(Date)
     } finally {
       await rm(filePath, { force: true })
+    }
+  })
+
+  it('should save sessions through a temp file rename', async () => {
+    vi.resetModules()
+    const mkdirMock = vi.fn().mockResolvedValue(undefined)
+    const writeFileMock = vi.fn().mockResolvedValue(undefined)
+    const renameMock = vi.fn().mockResolvedValue(undefined)
+
+    vi.doMock('fs/promises', () => ({
+      mkdir: mkdirMock,
+      readFile: vi.fn(),
+      writeFile: writeFileMock,
+      readdir: vi.fn(),
+      rename: renameMock
+    }))
+
+    try {
+      const { StateManager: MockedStateManager } = await import('../../src/state/state-manager.js')
+      const atomicManager = new MockedStateManager('/repo')
+      const session: ReviewSession = {
+        id: 'atomic-1',
+        startedAt: new Date('2024-01-01'),
+        updatedAt: new Date('2024-01-01'),
+        status: 'in_progress',
+        config: { focusAreas: [], selectedFeatures: [] },
+        plan: { features: [], totalFeatures: 0, selectedCount: 0 },
+        progress: { currentFeatureIndex: 0, completedFeatures: [], featureResults: {} }
+      }
+
+      await atomicManager.saveSession(session)
+
+      const tempPath = writeFileMock.mock.calls[0][0]
+      expect(tempPath).toMatch(/^\/repo\/\.magpie\/sessions\/atomic-1\.json\..+\.tmp$/)
+      expect(renameMock).toHaveBeenCalledWith(tempPath, '/repo/.magpie/sessions/atomic-1.json')
+    } finally {
+      vi.doUnmock('fs/promises')
+      vi.resetModules()
     }
   })
 })

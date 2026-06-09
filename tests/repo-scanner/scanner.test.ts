@@ -2,14 +2,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { RepoScanner } from '../../src/repo-scanner/scanner.js'
 import * as fs from 'fs'
-import * as path from 'path'
+import { createHash } from 'crypto'
 
 vi.mock('fs')
-vi.mock('path')
 
 describe('RepoScanner', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    vi.mocked(fs.realpathSync).mockImplementation((p) => String(p) as any)
   })
 
   it('should scan directory and return file list', async () => {
@@ -19,14 +19,14 @@ describe('RepoScanner', () => {
       if (String(p) === '/project/src') return ['index.ts', 'utils.ts'] as any
       return [] as any
     })
-    vi.mocked(fs.statSync).mockImplementation((p) => ({
+    vi.mocked(fs.lstatSync).mockImplementation((p) => ({
+      isSymbolicLink: () => false,
       isDirectory: () => String(p) === '/project/src',
       isFile: () => String(p).endsWith('.ts'),
-      size: 1024
+      size: 1024,
+      mtimeMs: 123
     }) as any)
     vi.mocked(fs.readFileSync).mockReturnValue('line1\nline2\nline3')
-    vi.mocked(path.join).mockImplementation((...args) => args.join('/'))
-    vi.mocked(path.relative).mockImplementation((from, to) => String(to).replace(from + '/', ''))
 
     const scanner = new RepoScanner('/project')
     const files = await scanner.scanFiles()
@@ -35,6 +35,105 @@ describe('RepoScanner', () => {
     expect(files[0].relativePath).toBe('src/index.ts')
     expect(files[0].language).toBe('typescript')
     expect(files[0].lines).toBe(3)
+    expect(files[0].contentHash).toBe(createHash('sha256').update('line1\nline2\nline3').digest('hex'))
+  })
+
+  it('should scan the real directory when repo root is a symlink', async () => {
+    vi.mocked(fs.realpathSync).mockImplementation((p) => {
+      const filePath = String(p)
+      if (filePath === '/repo-link') return '/repo-real' as any
+      return filePath as any
+    })
+    vi.mocked(fs.readdirSync).mockImplementation((p) => {
+      if (String(p) === '/repo-real') return ['index.ts'] as any
+      return [] as any
+    })
+    vi.mocked(fs.lstatSync).mockImplementation((p) => ({
+      isSymbolicLink: () => false,
+      isDirectory: () => false,
+      isFile: () => String(p).endsWith('.ts'),
+      size: 1024,
+      mtimeMs: 123
+    }) as any)
+    vi.mocked(fs.readFileSync).mockReturnValue('line1\nline2')
+
+    const scanner = new RepoScanner('/repo-link')
+    const files = await scanner.scanFiles()
+
+    expect(files).toHaveLength(1)
+    expect(files[0].path).toBe('/repo-real/index.ts')
+    expect(files[0].relativePath).toBe('index.ts')
+  })
+
+  it('should scan children when repository root is a filesystem root', async () => {
+    vi.mocked(fs.readdirSync).mockImplementation((p) => {
+      if (String(p) === '/') return ['workspace'] as any
+      if (String(p) === '/workspace') return ['index.ts'] as any
+      return [] as any
+    })
+    vi.mocked(fs.lstatSync).mockImplementation((p) => {
+      const filePath = String(p)
+      return {
+        isSymbolicLink: () => false,
+        isDirectory: () => filePath === '/' || filePath === '/workspace',
+        isFile: () => filePath.endsWith('.ts'),
+        size: 1024,
+        mtimeMs: 123
+      } as any
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue('line1\nline2')
+
+    const scanner = new RepoScanner('/')
+    const files = await scanner.scanFiles()
+
+    expect(files).toHaveLength(1)
+    expect(files[0].relativePath).toBe('workspace/index.ts')
+  })
+
+  it('should reject scan paths outside the repo root', async () => {
+    const scanner = new RepoScanner('/project', { path: '../../etc' })
+
+    await expect(scanner.scanFiles()).rejects.toThrow('Scan path must stay within repository root')
+    expect(fs.readdirSync).not.toHaveBeenCalled()
+  })
+
+  it('should reject scan paths that resolve outside through symlink components', async () => {
+    vi.mocked(fs.realpathSync).mockImplementation((p) => {
+      const filePath = String(p)
+      if (filePath === '/project/link/subdir') return '/etc/subdir' as any
+      return filePath as any
+    })
+
+    const scanner = new RepoScanner('/project', { path: 'link/subdir' })
+
+    await expect(scanner.scanFiles()).rejects.toThrow('Scan path must stay within repository root')
+    expect(fs.readdirSync).not.toHaveBeenCalled()
+  })
+
+  it('should skip symlinks during scanning', async () => {
+    vi.mocked(fs.readdirSync).mockImplementation((p) => {
+      if (String(p) === '/project') return ['src', 'outside-link.ts'] as any
+      if (String(p) === '/project/src') return ['index.ts'] as any
+      return [] as any
+    })
+    vi.mocked(fs.lstatSync).mockImplementation((p) => {
+      const filePath = String(p)
+      return {
+        isSymbolicLink: () => filePath === '/project/outside-link.ts',
+        isDirectory: () => filePath === '/project/src',
+        isFile: () => filePath.endsWith('.ts'),
+        size: 1024,
+        mtimeMs: 123
+      } as any
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue('line1\nline2')
+
+    const scanner = new RepoScanner('/project')
+    const files = await scanner.scanFiles()
+
+    expect(files).toHaveLength(1)
+    expect(files[0].relativePath).toBe('src/index.ts')
+    expect(files.some(file => file.relativePath === 'outside-link.ts')).toBe(false)
   })
 
   it('should calculate repo stats', async () => {

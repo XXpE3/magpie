@@ -1,7 +1,8 @@
 // src/state/state-manager.ts
-import { mkdir, readFile, writeFile, readdir } from 'fs/promises'
+import { mkdir, readFile, writeFile, readdir, rename } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
+import { randomUUID } from 'crypto'
 import type { ReviewSession, FeatureAnalysis, DiscussSession } from './types.js'
 
 export class StateManager {
@@ -22,7 +23,7 @@ export class StateManager {
     const sessionsDir = join(this.magpieDir, 'sessions')
     await mkdir(sessionsDir, { recursive: true })
     const filePath = join(sessionsDir, `${session.id}.json`)
-    await writeFile(filePath, JSON.stringify(session, null, 2))
+    await this.writeJsonFile(filePath, session)
   }
 
   async loadSession(id: string): Promise<ReviewSession | null> {
@@ -33,6 +34,14 @@ export class StateManager {
       // Convert date strings back to Date objects
       data.startedAt = new Date(data.startedAt)
       data.updatedAt = new Date(data.updatedAt)
+      for (const result of Object.values(data.progress?.featureResults ?? {})) {
+        if (result && typeof result === 'object' && 'reviewedAt' in result) {
+          const featureResult = result as { reviewedAt?: string | Date }
+          if (featureResult.reviewedAt) {
+            featureResult.reviewedAt = new Date(featureResult.reviewedAt)
+          }
+        }
+      }
       return data as ReviewSession
     } catch {
       return null
@@ -104,6 +113,12 @@ export class StateManager {
     } catch {
       return null
     }
+  }
+
+  private async writeJsonFile(filePath: string, value: unknown): Promise<void> {
+    const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`
+    await writeFile(tempPath, JSON.stringify(value, null, 2))
+    await rename(tempPath, filePath)
   }
 
   // Discuss session methods — stored in ~/.magpie/discussions/

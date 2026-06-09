@@ -10,7 +10,7 @@ export interface Feature {
   name: string
   description: string
   entryPoints: string[]
-  files: Array<{ path: string; relativePath: string; language: string; lines: number; size: number }>
+  files: Array<{ path: string; relativePath: string; language: string; lines: number; size: number; mtimeMs?: number }>
   estimatedTokens: number
 }
 

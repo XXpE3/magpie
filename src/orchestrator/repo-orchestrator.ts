@@ -14,7 +14,7 @@ export interface RepoOrchestratorOptions {
   onMessage?: (reviewerId: string, chunk: string) => void
   onDebate?: (issue: string, messages: string[]) => void
   focusAreas?: ReviewFocus[]
-  onFeatureComplete?: (featureId: string, result: FeatureReviewResult) => void
+  onFeatureComplete?: (featureId: string, result: FeatureReviewResult) => void | Promise<void>
 }
 
 export interface FeatureRepoReviewResult extends RepoReviewResult {
@@ -97,7 +97,7 @@ export class RepoOrchestrator {
       }
 
       featureResults[step.featureId] = result
-      this.options.onFeatureComplete?.(step.featureId, result)
+      await this.options.onFeatureComplete?.(step.featureId, result)
       this.options.onStepComplete?.(step, i)
     }
 

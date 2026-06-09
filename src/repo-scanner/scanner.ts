@@ -1,41 +1,67 @@
 // src/repo-scanner/scanner.ts
 import * as fs from 'fs'
+import { createHash } from 'crypto'
 import * as path from 'path'
 import type { FileInfo, RepoStats, ScanOptions } from './types.js'
 import { shouldIgnore, detectLanguage } from './filter.js'
 
 export class RepoScanner {
   private rootPath: string
+  private rootRealPath = ''
   private options: ScanOptions
   private files: FileInfo[] = []
 
   constructor(rootPath: string, options: ScanOptions = {}) {
-    this.rootPath = rootPath
+    this.rootPath = path.resolve(rootPath)
     this.options = options
   }
 
   async scanFiles(): Promise<FileInfo[]> {
     this.files = []
     const targetPath = this.options.path
-      ? path.join(this.rootPath, this.options.path)
+      ? path.resolve(this.rootPath, this.options.path)
       : this.rootPath
 
-    this.scanDirectory(targetPath)
+    if (!this.isInsideRoot(targetPath, this.rootPath)) {
+      throw new Error(`Scan path must stay within repository root: ${this.options.path}`)
+    }
+
+    this.rootRealPath = fs.realpathSync(this.rootPath).toString()
+    const targetRealPath = fs.realpathSync(targetPath).toString()
+    if (!this.isInsideRoot(targetRealPath, this.rootRealPath)) {
+      throw new Error(`Scan path must stay within repository root: ${this.options.path}`)
+    }
+
+    this.scanDirectory(targetRealPath)
     return this.files
   }
 
   private scanDirectory(dirPath: string): void {
+    const dirStat = fs.lstatSync(dirPath)
+    if (dirStat.isSymbolicLink()) {
+      return
+    }
+
+    const dirRealPath = fs.realpathSync(dirPath).toString()
+    if (!this.isInsideRoot(dirRealPath, this.rootRealPath)) {
+      throw new Error(`Scan path must stay within repository root: ${dirPath}`)
+    }
+
     const entries = fs.readdirSync(dirPath)
 
     for (const entry of entries) {
       const fullPath = path.join(dirPath, entry)
-      const relativePath = path.relative(this.rootPath, fullPath)
+      const relativePath = path.relative(this.rootRealPath, fullPath)
 
       if (shouldIgnore(relativePath, this.options.ignore || [])) {
         continue
       }
 
-      const stat = fs.statSync(fullPath)
+      const stat = fs.lstatSync(fullPath)
+
+      if (stat.isSymbolicLink()) {
+        continue
+      }
 
       if (stat.isDirectory()) {
         this.scanDirectory(fullPath)
@@ -53,7 +79,9 @@ export class RepoScanner {
             relativePath,
             language: detectLanguage(relativePath),
             lines,
-            size: stat.size
+            size: stat.size,
+            mtimeMs: stat.mtimeMs,
+            contentHash: createHash('sha256').update(content).digest('hex')
           })
         } catch {
           // Skip files that can't be read as UTF-8 (likely binary or permission denied)
@@ -88,6 +116,11 @@ export class RepoScanner {
 
   getFiles(): FileInfo[] {
     return this.files
+  }
+
+  private isInsideRoot(targetPath: string, rootPath: string): boolean {
+    const relativePath = path.relative(rootPath, targetPath)
+    return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
   }
 
   private estimateTokens(charCount: number): number {
