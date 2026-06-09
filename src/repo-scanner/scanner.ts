@@ -6,6 +6,7 @@ import { shouldIgnore, detectLanguage } from './filter.js'
 
 export class RepoScanner {
   private rootPath: string
+  private rootRealPath = ''
   private options: ScanOptions
   private files: FileInfo[] = []
 
@@ -20,7 +21,13 @@ export class RepoScanner {
       ? path.resolve(this.rootPath, this.options.path)
       : this.rootPath
 
-    if (!this.isInsideRoot(targetPath)) {
+    if (!this.isInsideRoot(targetPath, this.rootPath)) {
+      throw new Error(`Scan path must stay within repository root: ${this.options.path}`)
+    }
+
+    this.rootRealPath = fs.realpathSync(this.rootPath).toString()
+    const targetRealPath = fs.realpathSync(targetPath).toString()
+    if (!this.isInsideRoot(targetRealPath, this.rootRealPath)) {
       throw new Error(`Scan path must stay within repository root: ${this.options.path}`)
     }
 
@@ -32,6 +39,11 @@ export class RepoScanner {
     const dirStat = fs.lstatSync(dirPath)
     if (dirStat.isSymbolicLink()) {
       return
+    }
+
+    const dirRealPath = fs.realpathSync(dirPath).toString()
+    if (!this.isInsideRoot(dirRealPath, this.rootRealPath)) {
+      throw new Error(`Scan path must stay within repository root: ${dirPath}`)
     }
 
     const entries = fs.readdirSync(dirPath)
@@ -104,8 +116,8 @@ export class RepoScanner {
     return this.files
   }
 
-  private isInsideRoot(targetPath: string): boolean {
-    return targetPath === this.rootPath || targetPath.startsWith(this.rootPath + path.sep)
+  private isInsideRoot(targetPath: string, rootPath: string): boolean {
+    return targetPath === rootPath || targetPath.startsWith(rootPath + path.sep)
   }
 
   private estimateTokens(charCount: number): number {

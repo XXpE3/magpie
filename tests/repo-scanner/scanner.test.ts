@@ -8,6 +8,7 @@ vi.mock('fs')
 describe('RepoScanner', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    vi.mocked(fs.realpathSync).mockImplementation((p) => String(p) as any)
   })
 
   it('should scan directory and return file list', async () => {
@@ -37,6 +38,19 @@ describe('RepoScanner', () => {
 
   it('should reject scan paths outside the repo root', async () => {
     const scanner = new RepoScanner('/project', { path: '../../etc' })
+
+    await expect(scanner.scanFiles()).rejects.toThrow('Scan path must stay within repository root')
+    expect(fs.readdirSync).not.toHaveBeenCalled()
+  })
+
+  it('should reject scan paths that resolve outside through symlink components', async () => {
+    vi.mocked(fs.realpathSync).mockImplementation((p) => {
+      const filePath = String(p)
+      if (filePath === '/project/link/subdir') return '/etc/subdir' as any
+      return filePath as any
+    })
+
+    const scanner = new RepoScanner('/project', { path: 'link/subdir' })
 
     await expect(scanner.scanFiles()).rejects.toThrow('Scan path must stay within repository root')
     expect(fs.readdirSync).not.toHaveBeenCalled()
