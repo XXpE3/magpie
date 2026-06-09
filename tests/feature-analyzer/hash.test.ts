@@ -44,4 +44,18 @@ describe('computeCodebaseHash', () => {
 
     expect(hash1).not.toBe(hash2)
   })
+
+  it('should detect same-size content changes through mtime', () => {
+    const files1: FileInfo[] = [
+      { path: '/a.ts', relativePath: 'a.ts', language: 'typescript', lines: 100, size: 1000, mtimeMs: 100 }
+    ]
+    const files2: FileInfo[] = [
+      { path: '/a.ts', relativePath: 'a.ts', language: 'typescript', lines: 100, size: 1000, mtimeMs: 200 }
+    ]
+
+    const hash1 = computeCodebaseHash(files1)
+    const hash2 = computeCodebaseHash(files2)
+
+    expect(hash1).not.toBe(hash2)
+  })
 })

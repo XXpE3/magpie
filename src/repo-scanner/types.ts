@@ -5,6 +5,7 @@ export interface FileInfo {
   language: string
   lines: number
   size: number
+  mtimeMs?: number
 }
 
 export interface RepoStats {

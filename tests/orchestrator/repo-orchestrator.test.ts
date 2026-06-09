@@ -246,4 +246,27 @@ describe('RepoOrchestrator - Feature Based', () => {
 
     expect(onFeatureComplete).toHaveBeenCalledWith('write', expect.any(Object))
   })
+
+  it('should wait for async onFeatureComplete callback', async () => {
+    let saved = false
+
+    const featurePlan: FeaturePlan = {
+      steps: [
+        { featureId: 'write', name: 'Write', description: '', files: [], estimatedTokens: 100 }
+      ],
+      totalEstimatedTokens: 100,
+      totalEstimatedCost: 0.001
+    }
+
+    const orchestrator = new RepoOrchestrator([mockReviewer], mockSummarizer, {
+      onFeatureComplete: async () => {
+        await new Promise(resolve => setTimeout(resolve, 0))
+        saved = true
+      }
+    })
+
+    await orchestrator.executeFeaturePlan(featurePlan, 'test-repo')
+
+    expect(saved).toBe(true)
+  })
 })

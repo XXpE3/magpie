@@ -10,21 +10,30 @@ export class RepoScanner {
   private files: FileInfo[] = []
 
   constructor(rootPath: string, options: ScanOptions = {}) {
-    this.rootPath = rootPath
+    this.rootPath = path.resolve(rootPath)
     this.options = options
   }
 
   async scanFiles(): Promise<FileInfo[]> {
     this.files = []
     const targetPath = this.options.path
-      ? path.join(this.rootPath, this.options.path)
+      ? path.resolve(this.rootPath, this.options.path)
       : this.rootPath
+
+    if (!this.isInsideRoot(targetPath)) {
+      throw new Error(`Scan path must stay within repository root: ${this.options.path}`)
+    }
 
     this.scanDirectory(targetPath)
     return this.files
   }
 
   private scanDirectory(dirPath: string): void {
+    const dirStat = fs.lstatSync(dirPath)
+    if (dirStat.isSymbolicLink()) {
+      return
+    }
+
     const entries = fs.readdirSync(dirPath)
 
     for (const entry of entries) {
@@ -35,7 +44,11 @@ export class RepoScanner {
         continue
       }
 
-      const stat = fs.statSync(fullPath)
+      const stat = fs.lstatSync(fullPath)
+
+      if (stat.isSymbolicLink()) {
+        continue
+      }
 
       if (stat.isDirectory()) {
         this.scanDirectory(fullPath)
@@ -53,7 +66,8 @@ export class RepoScanner {
             relativePath,
             language: detectLanguage(relativePath),
             lines,
-            size: stat.size
+            size: stat.size,
+            mtimeMs: stat.mtimeMs
           })
         } catch {
           // Skip files that can't be read as UTF-8 (likely binary or permission denied)
@@ -88,6 +102,10 @@ export class RepoScanner {
 
   getFiles(): FileInfo[] {
     return this.files
+  }
+
+  private isInsideRoot(targetPath: string): boolean {
+    return targetPath === this.rootPath || targetPath.startsWith(this.rootPath + path.sep)
   }
 
   private estimateTokens(charCount: number): number {
