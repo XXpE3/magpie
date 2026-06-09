@@ -34,6 +34,21 @@ function isForceProceedError(error: unknown): boolean {
   return error instanceof ForceProceedError
 }
 
+interface VisibleConversationMessage {
+  message: DebateMessage
+  index: number
+}
+
+interface BuiltReviewMessages {
+  messages: Message[]
+  visibleMessages: VisibleConversationMessage[]
+}
+
+interface ReviewerRuntimeState {
+  hasResponded: boolean
+  lastSeenMessageIndex: number
+}
+
 function stopStream<T>(stream: AsyncGenerator<T, void, unknown>): void {
   const stopped = stream.return?.()
   if (stopped) void stopped.catch(() => {})
@@ -222,7 +237,7 @@ export class DebateOrchestrator {
   private taskPrompt: string = ''  // Original task prompt (contains PR number, etc.)
   private reviewTarget: ReviewTarget | null = null
   private reviewTargetPayload: ReviewTargetPayload | null = null
-  private lastSeenIndex: Map<string, number> = new Map()  // Track what each reviewer has seen
+  private reviewerStates: Map<string, ReviewerRuntimeState> = new Map()
 
   constructor(
     reviewers: Reviewer[],
@@ -274,6 +289,89 @@ export class DebateOrchestrator {
   private promptFor(provider: AIProvider): string {
     if (!this.reviewTargetPayload) return this.taskPrompt
     return selectReviewPrompt(this.reviewTargetPayload, provider.capabilities)
+  }
+
+  private resetReviewerStates(): void {
+    this.reviewerStates.clear()
+    for (const reviewer of this.reviewers) {
+      this.reviewerStates.set(reviewer.id, {
+        hasResponded: false,
+        lastSeenMessageIndex: -1,
+      })
+    }
+  }
+
+  private getReviewerState(reviewerId: string): ReviewerRuntimeState {
+    let state = this.reviewerStates.get(reviewerId)
+    if (!state) {
+      state = { hasResponded: false, lastSeenMessageIndex: -1 }
+      this.reviewerStates.set(reviewerId, state)
+    }
+    return state
+  }
+
+  private recordVisibleMessages(reviewerId: string, messages: Array<{ index: number }>): void {
+    if (messages.length === 0) return
+    const state = this.getReviewerState(reviewerId)
+    for (const message of messages) {
+      if (message.index > state.lastSeenMessageIndex) {
+        state.lastSeenMessageIndex = message.index
+      }
+    }
+  }
+
+  private addConversationMessage(
+    reviewerId: string,
+    content: string,
+    round: number,
+    phase: DebateMessage['phase'],
+    status: DebateMessage['status'] = 'success'
+  ): void {
+    this.conversationHistory.push({
+      reviewerId,
+      content,
+      timestamp: new Date(),
+      round,
+      phase,
+      status,
+    })
+  }
+
+  private isSuccessfulReviewMessage(message: DebateMessage): boolean {
+    return message.reviewerId !== 'user'
+      && (message.phase ?? 'review') === 'review'
+      && (message.status ?? 'success') === 'success'
+  }
+
+  private getVisibleMessages(currentReviewerId: string, currentRound: number): VisibleConversationMessage[] {
+    return this.conversationHistory
+      .map((message, index) => ({ message, index }))
+      .filter(({ message }) => {
+        const status = message.status ?? 'success'
+        if (status !== 'success') return false
+
+        const round = message.round ?? currentRound
+        if (message.reviewerId === 'user') {
+          const phase = message.phase ?? 'interactive'
+          return (phase === 'interactive' || phase === 'review') && round <= currentRound
+        }
+
+        if (round >= currentRound) return false
+        if (message.reviewerId === currentReviewerId) return false
+        return this.isSuccessfulReviewMessage(message)
+      })
+  }
+
+  private formatInteractiveMessages(messages: VisibleConversationMessage[]): string {
+    if (messages.length === 0) return ''
+    const content = messages
+      .map(({ message }) => `[Human]: ${message.content}`)
+      .join('\n\n---\n\n')
+    return `\n\nAdditional user guidance for this round:\n\n${content}`
+  }
+
+  private markReviewerResponded(reviewerId: string): void {
+    this.getReviewerState(reviewerId).hasResponded = true
   }
 
   // Estimate tokens from text (CJK ~0.7 tokens/char, English ~0.25 tokens/char)
@@ -379,24 +477,22 @@ export class DebateOrchestrator {
   }
 
   // Check if reviewers have converged (reached consensus)
-  private async checkConvergence(): Promise<boolean> {
-    if (this.conversationHistory.length < this.reviewers.length) {
-      return false // Need at least 1 complete round to check
+  private async checkConvergence(round: number): Promise<boolean> {
+    const roundMessages = this.conversationHistory.filter(message =>
+      message.round === round && this.isSuccessfulReviewMessage(message)
+    )
+    if (roundMessages.length < this.reviewers.length) {
+      return false
     }
 
-    // Count how many rounds have been completed
-    const roundsCompleted = Math.floor(this.conversationHistory.length / this.reviewers.length)
-
-    // Get last round's messages
-    const lastRoundMessages = this.conversationHistory.slice(-this.reviewers.length)
-    const messagesText = lastRoundMessages
+    const messagesText = roundMessages
       .map(m => `[${m.reviewerId}]: ${m.content}`)
       .join('\n\n---\n\n')
 
-    const isFirstRound = roundsCompleted <= 1
+    const isFirstRound = round <= 1
     const roundContext = isFirstRound
       ? `IMPORTANT: This is Round 1. Reviewers have NOT seen each other's opinions - they reviewed independently. If they independently arrived at the same conclusions, that IS valid convergence.`
-      : `IMPORTANT: This is Round ${roundsCompleted}. Reviewers have now seen each other's opinions.`
+      : `IMPORTANT: This is Round ${round}. Reviewers have now seen each other's opinions.`
 
     const prompt = `You are a strict consensus judge. Analyze whether these ${this.reviewers.length} reviewers have reached TRUE CONSENSUS.
 
@@ -416,7 +512,7 @@ NOT CONSENSUS if ANY of these:
 - Silence on another's point (not responding to it) - silence is NOT agreement
 - They list problems but haven't confirmed they agree on the complete list
 
-Reviews from Round ${roundsCompleted}:
+Reviews from Round ${round}:
 ${messagesText}
 
 First, provide a brief reasoning (2-3 sentences) explaining your judgment.
@@ -474,7 +570,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
   async run(label: string, prompt: string, target?: ReviewTarget): Promise<DebateResult> {
     this.conversationHistory = []
     this.tokenUsage.clear()
-    this.lastSeenIndex.clear()
+    this.resetReviewerStates()
     this.setReviewTarget(prompt, target)
     let convergedAtRound: number | undefined
 
@@ -495,26 +591,19 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
               break
             }
             if (userInput) {
-              this.conversationHistory.push({
-                reviewerId: 'user',
-                content: userInput,
-                timestamp: new Date()
-              })
+              this.addConversationMessage('user', userInput, round, 'interactive')
             }
           }
 
-          const messages = this.buildMessages(reviewer.id)
-          const response = await reviewer.provider.chat(messages, this.withLang(reviewer.systemPrompt))
+          const builtMessages = this.buildMessages(reviewer.id, round)
+          const response = await reviewer.provider.chat(builtMessages.messages, this.withLang(reviewer.systemPrompt))
 
-          const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
+          const inputText = builtMessages.messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
           this.trackTokens(reviewer.id, inputText, response)
+          this.recordVisibleMessages(reviewer.id, builtMessages.visibleMessages)
 
-          this.conversationHistory.push({
-            reviewerId: reviewer.id,
-            content: response,
-            timestamp: new Date()
-          })
-          this.markAsSeen(reviewer.id)
+          this.addConversationMessage(reviewer.id, response, round, 'review')
+          this.markReviewerResponded(reviewer.id)
 
           this.options.onMessage?.(reviewer.id, response)
         }
@@ -522,7 +611,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         // Check convergence if enabled
         let converged = false
         if (this.options.checkConvergence && round < this.options.maxRounds) {
-          converged = await this.checkConvergence()
+          converged = await this.checkConvergence(round)
           if (converged) {
             convergedAtRound = round
           }
@@ -578,7 +667,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
   async runStreaming(label: string, prompt: string, target?: ReviewTarget): Promise<DebateResult> {
     this.conversationHistory = []
     this.tokenUsage.clear()
-    this.lastSeenIndex.clear()
+    this.resetReviewerStates()
     this.analysis = ''
     this.setReviewTarget(prompt, target)
     let convergedAtRound: number | undefined
@@ -665,17 +754,8 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
           // Track tokens and add to history
           this.trackTokens(targetReviewer.id, qa.question, qaResponse)
-          this.conversationHistory.push({
-            reviewerId: 'user',
-            content: `[Question to ${targetReviewer.id}]: ${qa.question}`,
-            timestamp: new Date()
-          })
-          this.conversationHistory.push({
-            reviewerId: targetReviewer.id,
-            content: qaResponse,
-            timestamp: new Date()
-          })
-          this.markAsSeen(targetReviewer.id)
+          this.addConversationMessage('user', `[Question to ${targetReviewer.id}]: ${qa.question}`, 0, 'qa')
+          this.addConversationMessage(targetReviewer.id, qaResponse, 0, 'qa')
         }
       }
 
@@ -686,19 +766,18 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
           const userInput = await this.options.onInteractive()
           if (userInput === 'q') break
           if (userInput) {
-            this.conversationHistory.push({
-              reviewerId: 'user',
-              content: userInput,
-              timestamp: new Date()
-            })
+            this.addConversationMessage('user', userInput, round, 'interactive')
           }
         }
 
-        // Build messages for all reviewers BEFORE any execution (same info for all)
-        const reviewerTasks = this.reviewers.map(reviewer => ({
-          reviewer,
-          messages: this.buildMessages(reviewer.id)
-        }))
+        const reviewerTasks = this.reviewers.map(reviewer => {
+          const builtMessages = this.buildMessages(reviewer.id, round)
+          return {
+            reviewer,
+            messages: builtMessages.messages,
+            visibleMessages: builtMessages.visibleMessages,
+          }
+        })
 
         // Execute all reviewers in parallel with unified status tracking.
         // Also keep the legacy onParallelStatus callback alive for external callers.
@@ -709,12 +788,17 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
           label: reviewer.id,
         })))
 
-        const legacyStatuses: ReviewerStatus[] = reviewerTasks.map(({ reviewer }) => ({
-          reviewerId: reviewer.id,
-          status: 'pending' as const,
-          outputChars: 0,
-          chunkCount: 0,
-        }))
+        const legacyStatuses: ReviewerStatus[] = reviewerTasks.map(({ reviewer }) => {
+          const state = this.getReviewerState(reviewer.id)
+          return {
+            reviewerId: reviewer.id,
+            status: 'pending' as const,
+            outputChars: 0,
+            chunkCount: 0,
+            hasResponded: state.hasResponded,
+            lastSeenMessageIndex: state.lastSeenMessageIndex,
+          }
+        })
         let legacyStatusTimer: ReturnType<typeof setTimeout> | null = null
         let lastLegacyStatusEmitAt = 0
         const clearLegacyStatusTimer = () => {
@@ -790,7 +874,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         }
 
 
-        const reviewerPromises = reviewerTasks.map(async ({ reviewer, messages }, index) => {
+        const reviewerPromises = reviewerTasks.map(async ({ reviewer, messages, visibleMessages }, index) => {
           const startTime = Date.now()
           updateLegacyStatus(index, {
             status: 'thinking',
@@ -835,7 +919,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
               stalledFor: undefined,
             }, true)
             const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
-            return { reviewer, fullResponse, inputText, failed: false as const, cancelled: false as const }
+            return { reviewer, fullResponse, inputText, visibleMessages, failed: false as const, cancelled: false as const }
           } catch (err) {
             const endTime = Date.now()
             const forceProceed = isForceProceedError(err)
@@ -888,12 +972,16 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
             continue
           }
           this.trackTokens(result.reviewer.id, result.inputText, result.fullResponse)
-          this.conversationHistory.push({
-            reviewerId: result.reviewer.id,
-            content: result.fullResponse,
-            timestamp: new Date()
-          })
-          this.markAsSeen(result.reviewer.id)
+          this.recordVisibleMessages(result.reviewer.id, result.visibleMessages)
+          this.addConversationMessage(result.reviewer.id, result.fullResponse, round, 'review')
+          this.markReviewerResponded(result.reviewer.id)
+          const resultIndex = reviewerTasks.findIndex(({ reviewer }) => reviewer.id === result.reviewer.id)
+          if (resultIndex >= 0) {
+            updateLegacyStatus(resultIndex, {
+              hasResponded: true,
+              lastSeenMessageIndex: this.getReviewerState(result.reviewer.id).lastSeenMessageIndex,
+            }, true)
+          }
           this.options.onMessage?.(result.reviewer.id, result.fullResponse)
         }
 
@@ -901,7 +989,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         let converged = false
         if (this.options.checkConvergence && round < this.options.maxRounds) {
           this.options.onWaiting?.('convergence-check')
-          converged = await this.checkConvergence()
+          converged = await this.checkConvergence(round)
           if (converged) {
             convergedAtRound = round
           }
@@ -965,16 +1053,15 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     }
   }
 
-  private buildMessages(currentReviewerId: string): Message[] {
+  private buildMessages(currentReviewerId: string, currentRound: number): BuiltReviewMessages {
     const reviewer = this.reviewers.find(r => r.id === currentReviewerId)
     const hasSession = reviewer?.provider.sessionId !== undefined
-    const lastSeen = this.lastSeenIndex.get(currentReviewerId) ?? -1
-    const isFirstCall = lastSeen < 0
+    const reviewerState = this.getReviewerState(currentReviewerId)
     const otherReviewerIds = this.reviewers.filter(r => r.id !== currentReviewerId).map(r => r.id)
+    const visibleMessages = this.getVisibleMessages(currentReviewerId, currentRound)
 
-    // Round 1: Each reviewer gives independent opinion (no other reviewers' responses)
-    // Round 2+: See all previous context
-    if (isFirstCall) {
+    // Round 1: Each reviewer gives independent opinion (no other reviewers' responses).
+    if (currentRound === 1) {
       // Build context section if available
       let contextSection = ''
       if (this.gatheredContext?.summary) {
@@ -998,60 +1085,48 @@ ${this.gatheredContext.summary}
         callChainSection = '\n' + formatCallChainForReviewer(this.gatheredContext.rawReferences) + '\n'
       }
 
+      const interactiveMessages = visibleMessages.filter(({ message }) => message.reviewerId === 'user')
+      const interactiveSection = this.formatInteractiveMessages(interactiveMessages)
+
       // First round - independent, exhaustive review
       const taskPrompt = reviewer ? this.promptFor(reviewer.provider) : this.taskPrompt
       const prompt = `Task: ${taskPrompt}
 ${contextSection}${focusSection}${callChainSection}Here is the analysis:
 
-${this.analysis}
+${this.analysis}${interactiveSection}
 
 You are [${currentReviewerId}]. Review EVERY changed file and EVERY changed function/block — do not skip any.
 For each change, check: correctness, security, performance, error handling, edge cases, maintainability.
 If you reviewed a file and found no issues, say so briefly. Do not stop early.${this.langSuffix}`
 
-      return [{ role: 'user', content: prompt }]
+      return { messages: [{ role: 'user', content: prompt }], visibleMessages }
     }
 
-    // Round 2+: Each reviewer sees only PREVIOUS rounds (not current round's earlier reviewers)
-    // This ensures everyone in the same round has the same information
-    const myMessageCount = this.conversationHistory.filter(m => m.reviewerId === currentReviewerId).length
-
-    // Get messages from previous rounds only (each reviewer's first N messages where N = myMessageCount)
-    const messageCountByReviewer = new Map<string, number>()
-    const previousRoundsMessages = this.conversationHistory.filter(msg => {
-      if (msg.reviewerId === currentReviewerId) return false // Exclude own messages
-      if (msg.reviewerId === 'user') return true // Include human interjections
-      const count = messageCountByReviewer.get(msg.reviewerId) || 0
-      if (count < myMessageCount) {
-        messageCountByReviewer.set(msg.reviewerId, count + 1)
-        return true
-      }
-      return false // Skip current round messages from other reviewers
-    })
-
+    // Round 2+: Each reviewer sees previous review rounds plus successful user interjections
+    // for this round; never current-round reviewer responses.
     if (hasSession) {
-      // Session mode: send only new messages (increment from last round)
-      const prevRoundCount = myMessageCount - 1
-      const messageCountByReviewer2 = new Map<string, number>()
-      const newMessages = previousRoundsMessages.filter(msg => {
-        if (msg.reviewerId === 'user') return true
-        const count = messageCountByReviewer2.get(msg.reviewerId) || 0
-        messageCountByReviewer2.set(msg.reviewerId, count + 1)
-        return count >= prevRoundCount // Only messages from round myMessageCount
-      })
+      // Session mode: send only messages not already included in this reviewer's previous prompts.
+      const lastSeenMessageIndex = reviewerState.lastSeenMessageIndex
+      const newMessages = visibleMessages.filter(({ index }) => index > lastSeenMessageIndex)
 
       if (newMessages.length === 0) {
-        return [{ role: 'user', content: 'Please continue with your review.' }]
+        return {
+          messages: [{ role: 'user', content: 'Please continue with your review.' }],
+          visibleMessages: [],
+        }
       }
 
       const newContent = newMessages
-        .map(m => `[${m.reviewerId}]: ${m.content}`)
+        .map(({ message }) => `[${message.reviewerId}]: ${message.content}`)
         .join('\n\n---\n\n')
 
-      return [{
-        role: 'user',
-        content: `You are [${currentReviewerId}]. Here's what others said in the previous round:\n\n${newContent}\n\nDo three things:\n1. Continue your own exhaustive review — are there changed files or functions you haven't covered yet? Cover them now.\n2. Point out what the other reviewers MISSED — which files or changes did they skip or gloss over?\n3. Respond to their points — agree where valid, challenge where you disagree.${this.langSuffix}`
-      }]
+      return {
+        messages: [{
+          role: 'user',
+          content: `You are [${currentReviewerId}]. Here's what others said in the previous round:\n\n${newContent}\n\nDo three things:\n1. Continue your own exhaustive review — are there changed files or functions you haven't covered yet? Cover them now.\n2. Point out what the other reviewers MISSED — which files or changes did they skip or gloss over?\n3. Respond to their points — agree where valid, challenge where you disagree.${this.langSuffix}`
+        }],
+        visibleMessages: newMessages,
+      }
     }
 
     // Non-session mode: full context with all previous rounds
@@ -1080,31 +1155,29 @@ Previous rounds discussion:`
       { role: 'user', content: prompt }
     ]
 
-    // Add previous rounds messages (excluding current round)
-    for (const msg of previousRoundsMessages) {
-      const prefix = msg.reviewerId === 'user' ? '[Human]: ' : `[${msg.reviewerId}]: `
+    for (const { message } of visibleMessages) {
+      const prefix = message.reviewerId === 'user' ? '[Human]: ' : `[${message.reviewerId}]: `
       messages.push({
         role: 'user',
-        content: prefix + msg.content
+        content: prefix + message.content
       })
     }
 
-    // Add own previous messages as assistant
-    const myMessages = this.conversationHistory.filter(m => m.reviewerId === currentReviewerId)
-    for (const msg of myMessages) {
+    const myMessages = this.conversationHistory.filter(message =>
+      message.reviewerId === currentReviewerId
+        && (message.round ?? currentRound) < currentRound
+        && this.isSuccessfulReviewMessage(message)
+    )
+    for (const message of myMessages) {
       messages.push({
         role: 'assistant',
-        content: msg.content
+        content: message.content
       })
     }
 
-    return messages
+    return { messages, visibleMessages }
   }
 
-  // Update what a reviewer has seen after they respond
-  private markAsSeen(reviewerId: string): void {
-    this.lastSeenIndex.set(reviewerId, this.conversationHistory.length - 1)
-  }
 
   /** Expose reviewers for post-review discussion */
   getReviewers(): Reviewer[] {

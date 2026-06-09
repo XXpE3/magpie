@@ -55,14 +55,15 @@ function makeAbortAwarePendingProvider(name: string, onAbort: () => void): AIPro
   }
 }
 
-function makeFirstCallPendingThenStreamProvider(name: string, onAbort: () => void): AIProvider {
+function makeFirstCallPendingThenStreamProvider(name: string, onAbort: () => void, onMessages?: (call: number, messages: Array<{ role: string; content: string }>) => void): AIProvider {
   let call = 0
   return {
     name,
     capabilities: testCapabilities,
     async chat() { return '```json\n{"issues":[]}\n```' },
-    async *chatStream(_messages, _systemPrompt, options) {
+    async *chatStream(messages, _systemPrompt, options) {
       call++
+      onMessages?.(call, messages)
       if (call === 1) {
         await new Promise<void>(resolve => {
           if (options?.signal?.aborted) {
@@ -356,6 +357,7 @@ describe('DebateOrchestrator streaming task status', () => {
     let control: { forceProceed(): void } | null = null
     let forced = false
     let slowAborted = false
+    const slowMessagesByCall = new Map<number, Array<{ role: string; content: string }>>()
     const completedRounds: number[] = []
     const taskSnapshots: TaskStatus[][] = []
     const legacySnapshots: Array<{ round: number; statuses: ReviewerStatus[] }> = []
@@ -363,7 +365,9 @@ describe('DebateOrchestrator streaming task status', () => {
     const status = new StatusTracker(snapshotStatus(taskSnapshots))
 
     const fast = makeReviewer('fast', makeRoundCountingProvider('fast'))
-    const slow = makeReviewer('slow', makeFirstCallPendingThenStreamProvider('slow', () => { slowAborted = true }))
+    const slow = makeReviewer('slow', makeFirstCallPendingThenStreamProvider('slow', () => { slowAborted = true }, (call, messages) => {
+      slowMessagesByCall.set(call, messages.map(message => ({ ...message })))
+    }))
     const summarizer = makeReviewer('summarizer', makeStreamProvider('summarizer', ['summary']))
     const analyzer = makeReviewer('analyzer', makeStreamProvider('analyzer', ['analysis']))
 
@@ -412,6 +416,7 @@ describe('DebateOrchestrator streaming task status', () => {
     expect(taskSnapshots.flat().find(task => task.id === 'reviewer:slow' && task.state === 'cancelled')?.error).toBe('Force proceed requested')
     expect(taskSnapshots.flat().some(task => task.id === 'reviewer:slow' && task.state === 'error' && task.error?.includes('Force proceed requested'))).toBe(false)
     expect(failedMessages).toEqual([])
+    expect(slowMessagesByCall.get(2)?.some(message => message.content.includes('fast round 1'))).toBe(true)
   })
 
   it('preserves final conclusion result and summarizer token usage with status tracking', async () => {
