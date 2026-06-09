@@ -3,7 +3,7 @@ import { runGh, runGit, validateGitHubRepo, validatePRNumber } from '../utils/co
 
 export interface CommentResult {
   success: boolean
-  inline: boolean
+  mode: 'inline' | 'file' | 'global'
   error?: string
 }
 
@@ -154,7 +154,7 @@ export function findLineByContent(patch: string, codeSnippet: string): number | 
 
     if (line.startsWith('+') || line.startsWith(' ')) {
       const content = line.slice(1).trim()
-      if (content.includes(normalized) || normalized.includes(content)) {
+      if (content.length >= 8 && (content.includes(normalized) || normalized.includes(content))) {
         return rightLine
       }
       rightLine++
@@ -285,7 +285,7 @@ export function postComment(
         ['api', `repos/${repo}/pulls/${prNumber}/comments`, '--input', '-'],
         { input: payload, stdio: ['pipe', 'pipe', 'pipe'] }
       )
-      return { success: true, inline: true }
+      return { success: true, mode: 'inline' }
     } catch {
       // Line not in diff — try file-level
     }
@@ -304,7 +304,7 @@ export function postComment(
       ['api', `repos/${repo}/pulls/${prNumber}/comments`, '--input', '-'],
       { input: payload, stdio: ['pipe', 'pipe', 'pipe'] }
     )
-    return { success: true, inline: true }
+    return { success: true, mode: 'file' }
   } catch {
     // File not in diff — fall back to global PR comment
   }
@@ -320,9 +320,9 @@ export function postComment(
       args,
       { input: body, stdio: ['pipe', 'pipe', 'pipe'] }
     )
-    return { success: true, inline: false }
+    return { success: true, mode: 'global' }
   } catch (e) {
-    return { success: false, inline: false, error: e instanceof Error ? e.message.slice(0, 200) : String(e) }
+    return { success: false, mode: 'global', error: e instanceof Error ? e.message.slice(0, 200) : String(e) }
   }
 }
 
@@ -438,9 +438,11 @@ export function postReview(
   const existingComments = getExistingComments(prNumber, resolvedRepo)
 
   const details: ReviewResult['details'] = []
-  const reviewComments: Array<{ path: string; line?: number; side?: string; body: string; subject_type?: string }> = []
-  const reviewDetailIndices: number[] = []
-  const reviewInputs: ReviewCommentInput[] = []
+  const reviewEntries: Array<{
+    payload: { path: string; line?: number; side?: string; body: string; subject_type?: string }
+    input: ReviewCommentInput
+    detailIndex: number
+  }> = []
   const globalEntries: Array<{ input: ReviewCommentInput; detailIndex: number }> = []
 
   // Build payloads based on pre-classified modes, skipping duplicates
@@ -456,25 +458,29 @@ export function postReview(
     }
 
     if (mode === 'inline') {
-      reviewComments.push({
-        path: c.path,
-        line: c.line,
-        side: 'RIGHT',
-        body: c.body,
-      })
       details.push({ path: c.path, line: c.line, success: false, mode: 'inline' })
-      reviewDetailIndices.push(details.length - 1)
-      reviewInputs.push(c)
+      reviewEntries.push({
+        payload: {
+          path: c.path,
+          line: c.line,
+          side: 'RIGHT',
+          body: c.body,
+        },
+        input: c,
+        detailIndex: details.length - 1,
+      })
     } else if (mode === 'file') {
       const lineRef = c.line ? `**Line ${c.line}:**\n\n` : ''
-      reviewComments.push({
-        path: c.path,
-        body: lineRef + c.body,
-        subject_type: 'file',
-      })
       details.push({ path: c.path, line: c.line, success: false, mode: 'file' })
-      reviewDetailIndices.push(details.length - 1)
-      reviewInputs.push(c)
+      reviewEntries.push({
+        payload: {
+          path: c.path,
+          body: lineRef + c.body,
+          subject_type: 'file',
+        },
+        input: c,
+        detailIndex: details.length - 1,
+      })
     } else {
       details.push({ path: c.path, line: c.line, success: false, mode: 'global' })
       globalEntries.push({ input: c, detailIndex: details.length - 1 })
@@ -482,26 +488,23 @@ export function postReview(
   }
 
   // Post the batch review (inline + file-level)
-  if (reviewComments.length > 0) {
+  if (reviewEntries.length > 0) {
     try {
       const payload = JSON.stringify({
         commit_id: commitSha,
         event: 'COMMENT',
-        comments: reviewComments,
+        comments: reviewEntries.map(entry => entry.payload),
       })
       runGh(
         ['api', `repos/${resolvedRepo}/pulls/${prNumber}/reviews`, '--input', '-'],
         { input: payload, stdio: ['pipe', 'pipe', 'pipe'] }
       )
-      for (const idx of reviewDetailIndices) {
+      for (const { detailIndex: idx } of reviewEntries) {
         details[idx].success = true
       }
     } catch {
       // Batch failed — try posting individually
-      for (let j = 0; j < reviewComments.length; j++) {
-        const idx = reviewDetailIndices[j]
-        const orig = reviewInputs[j]
-        if (!orig) continue
+      for (const { input: orig, detailIndex: idx } of reviewEntries) {
         const result = postComment(prNumber, {
           path: orig.path,
           line: orig.line,
@@ -510,8 +513,7 @@ export function postReview(
           repo,
         })
         details[idx].success = result.success
-        if (!result.success) details[idx].mode = 'failed'
-        else if (!result.inline) details[idx].mode = 'global'
+        details[idx].mode = result.success ? result.mode : 'failed'
       }
     }
   }
